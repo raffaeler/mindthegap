@@ -11,6 +11,10 @@ alongside `content`. Most OpenAI-compatible clients drop it. When the client
 sends the conversation back on the next turn, DeepSeek rejects the request
 with HTTP 400 (`reasoning_content must be passed back`) and multi-turn chats
 break.
+The exact error is printed by the GitHub Copilot CLI:
+```bash
+✗ 400 The `reasoning_content` in the thinking mode must be passed back to the API. 
+```
 
 `mindthegap` sits between the client and DeepSeek and:
 
