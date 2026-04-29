@@ -1,0 +1,11 @@
+{
+  "upstream_base_url": "https://api.deepseek.com",
+  "host": "127.0.0.1",
+  "port": 3333,
+  "think_tag_open": "<think>",
+  "think_tag_close": "</think>",
+  "reasoner_models": ["deepseek-reasoner"],
+  "unstitch_when_not_reasoner": "drop",
+  "request_timeout_s": 600,
+  "log_level": "INFO"
+}
