@@ -189,6 +189,18 @@ def test_transform_request_body_uses_drop_for_non_reasoner():
     assert out["messages"][0] == {"role": "assistant", "content": "A"}
 
 
+def test_transform_request_body_uses_forward_for_v4_pro():
+    body = {
+        "model": "deepseek-v4-pro",
+        "messages": [
+            {"role": "assistant", "content": "<think>\nr\n</think>\nA"},
+        ],
+    }
+    out = transform_request_body(body, S)
+    assert out["messages"][0]["reasoning_content"] == "r"
+    assert out["messages"][0]["content"] == "A"
+
+
 def test_transform_response_body_stitches_choices():
     body = {
         "choices": [

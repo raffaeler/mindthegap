@@ -4,7 +4,7 @@
   "port": 3333,
   "think_tag_open": "<think>",
   "think_tag_close": "</think>",
-  "reasoner_models": ["deepseek-reasoner"],
+  "reasoner_models": ["deepseek-reasoner", "deepseek-v4-pro"],
   "unstitch_when_not_reasoner": "drop",
   "request_timeout_s": 600,
   "log_level": "INFO",

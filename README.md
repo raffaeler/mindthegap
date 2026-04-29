@@ -263,7 +263,7 @@ useful when investigating stitch/unstitch issues.
 | `host` | `127.0.0.1` | Bind address |
 | `port` | `3333` | Bind port |
 | `think_tag_open` / `think_tag_close` | `<think>` / `</think>` | Tags wrapping the reasoning block |
-| `reasoner_models` | `["deepseek-reasoner"]` | Models for which `reasoning_content` is forwarded upstream |
+| `reasoner_models` | `["deepseek-reasoner", "deepseek-v4-pro"]` | Models for which `reasoning_content` is forwarded upstream |
 | `unstitch_when_not_reasoner` | `"drop"` | `drop` strips the block, `keep` leaves it inline, `forward` still sends it as `reasoning_content` |
 | `request_timeout_s` | `600` | Upstream HTTP timeout (seconds) |
 | `log_level` | `INFO` | Standard Python log level |

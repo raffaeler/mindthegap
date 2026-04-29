@@ -28,7 +28,9 @@ class Settings(BaseModel):
     port: int = 3333
     think_tag_open: str = "<think>"
     think_tag_close: str = "</think>"
-    reasoner_models: list[str] = Field(default_factory=lambda: ["deepseek-reasoner"])
+    reasoner_models: list[str] = Field(
+        default_factory=lambda: ["deepseek-reasoner", "deepseek-v4-pro"]
+    )
     unstitch_when_not_reasoner: UnstitchMode = "drop"
     request_timeout_s: float = 600.0
     log_level: str = "INFO"
