@@ -12,7 +12,7 @@ S = Settings()
 def test_stitch_message_with_reasoning():
     msg = {"role": "assistant", "content": "Hi", "reasoning_content": "let me think"}
     out = stitch_message(msg, S)
-    assert out == {"role": "assistant", "content": "[[think]]\nlet me think  \n[[/think]]\n\nHi"}
+    assert out == {"role": "assistant", "content": "[[think]]  \nlet me think  \n[[/think]]\n\nHi"}
     assert "reasoning_content" not in out
 
 
@@ -36,7 +36,7 @@ def test_stitch_message_null_content_with_tool_calls():
     }
     out = stitch_message(msg, S)
     assert out["tool_calls"] == [{"id": "1"}]
-    assert out["content"] == "[[think]]\nr  \n[[/think]]\n\n"
+    assert out["content"] == "[[think]]  \nr  \n[[/think]]\n\n"
 
 
 def test_unstitch_forward_extracts_reasoning():
@@ -83,11 +83,11 @@ def test_stitch_message_normalizes_trailing_newlines_in_reasoning():
     # one blank line between the body and the closing [[/think]].
     msg = {"role": "assistant", "content": "Hi", "reasoning_content": "thoughts\n"}
     out = stitch_message(msg, S)
-    assert out["content"] == "[[think]]\nthoughts  \n[[/think]]\n\nHi"
+    assert out["content"] == "[[think]]  \nthoughts  \n[[/think]]\n\nHi"
 
     msg2 = {"role": "assistant", "content": "Hi", "reasoning_content": "thoughts\n\n\n"}
     out2 = stitch_message(msg2, S)
-    assert out2["content"] == "[[think]]\nthoughts  \n[[/think]]\n\nHi"
+    assert out2["content"] == "[[think]]  \nthoughts  \n[[/think]]\n\nHi"
 
 
 def test_unstitch_skips_non_assistant():
@@ -219,5 +219,5 @@ def test_transform_response_body_stitches_choices():
     }
     out = transform_response_body(body, S)
     msg = out["choices"][0]["message"]
-    assert msg["content"] == "[[think]]\nthoughts  \n[[/think]]\n\nhi"
+    assert msg["content"] == "[[think]]  \nthoughts  \n[[/think]]\n\nhi"
     assert "reasoning_content" not in msg

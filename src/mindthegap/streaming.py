@@ -138,7 +138,10 @@ def _rewrite_choice(
     if isinstance(reasoning, str) and reasoning:
         st.reasoning_buffer.append(reasoning)
         if not st.opened:
-            pieces.append(f"{settings.think_tag_open}\n")
+            # Two trailing spaces before the newline = Markdown hard line break,
+            # so plain-text tags like ``[[think]]`` render on their own line
+            # instead of being flowed inline with the reasoning text.
+            pieces.append(f"{settings.think_tag_open}  \n")
             st.opened = True
             st.trailing_newlines = 1
         pieces.append(reasoning)

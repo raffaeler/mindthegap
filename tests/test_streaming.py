@@ -39,7 +39,7 @@ async def test_stream_reasoning_then_content_emits_think_tags():
     payloads = [json.loads(line) for line in data_lines if line != "[DONE]"]
     contents = [p["choices"][0]["delta"].get("content", "") for p in payloads]
     joined = "".join(c for c in contents if isinstance(c, str))
-    assert "[[think]]\nlet me think" in joined
+    assert "[[think]]  \nlet me think" in joined
     assert "[[/think]]\n\nHello world" in joined
     # reasoning_content must never leak downstream
     for p in payloads:

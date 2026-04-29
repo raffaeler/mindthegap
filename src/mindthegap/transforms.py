@@ -75,7 +75,7 @@ def stitch_message(
     # (A bare \n would otherwise be collapsed to a space by the client's
     # Markdown renderer and the tag would appear inline with the reasoning.)
     reasoning_body = reasoning.rstrip("\n").rstrip()
-    wrapped = f"{open_tag}\n{reasoning_body}  \n{close_tag}\n\n"
+    wrapped = f"{open_tag}  \n{reasoning_body}  \n{close_tag}\n\n"
     if isinstance(content, str) and content:
         out["content"] = wrapped + content
     else:

@@ -65,7 +65,7 @@ def test_chat_completions_nonstream_stitches_response(client):
     )
     assert resp.status_code == 200
     msg = resp.json()["choices"][0]["message"]
-    assert msg["content"] == "[[think]]\nthinking  \n[[/think]]\n\nHello"
+    assert msg["content"] == "[[think]]  \nthinking  \n[[/think]]\n\nHello"
     assert "reasoning_content" not in msg
 
     # request was unstitched (forward mode for reasoner)
@@ -111,7 +111,7 @@ def test_chat_completions_streaming_rewrites_sse(client):
         for p in payloads
         if isinstance(p["choices"][0]["delta"].get("content"), str)
     )
-    assert "[[think]]\nplan" in joined
+    assert "[[think]]  \nplan" in joined
     assert "[[/think]]\n\nHi" in joined
     assert "reasoning_content" not in body
     assert "[DONE]" in body
