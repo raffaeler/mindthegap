@@ -12,6 +12,7 @@ import httpx
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from .cache import ReasoningCache
 from .config import Settings, load_settings
 from .streaming import stitch_sse
 from .transforms import transform_request_body, transform_response_body
@@ -135,6 +136,7 @@ def _filter_headers(headers: Mapping[str, str] | Iterable[tuple[str, str]]) -> d
 def create_app(settings: Settings | None = None) -> FastAPI:
     cfg = settings or load_settings()
     logging.basicConfig(level=cfg.log_level.upper())
+    cache = ReasoningCache()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -142,6 +144,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         async with httpx.AsyncClient(timeout=timeout) as client:
             app.state.client = client
             app.state.settings = cfg
+            app.state.cache = cache
             yield
 
     app = FastAPI(title="mindthegap", lifespan=lifespan)
@@ -161,7 +164,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not isinstance(body, dict):
             return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
 
-        new_body = transform_request_body(body, cfg)
+        new_body = transform_request_body(body, cfg, cache=cache)
         is_stream = bool(new_body.get("stream"))
 
         upstream_url = cfg.upstream("/v1/chat/completions")
@@ -191,7 +194,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
             async def body_iter() -> AsyncIterator[bytes]:
                 try:
-                    async for out in stitch_sse(upstream_resp.aiter_bytes(), cfg):
+                    async for out in stitch_sse(upstream_resp.aiter_bytes(), cfg, cache=cache):
                         yield out
                 finally:
                     await upstream_resp.aclose()
@@ -229,7 +232,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 headers=resp_headers,
             )
         if isinstance(data, dict):
-            data = transform_response_body(data, cfg)
+            data = transform_response_body(data, cfg, cache=cache)
         return JSONResponse(data, status_code=upstream_resp.status_code)
 
     @app.api_route(
