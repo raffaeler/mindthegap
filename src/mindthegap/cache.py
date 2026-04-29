@@ -21,9 +21,12 @@ single mutex \u2014 access is sub-microsecond and never blocks I/O.
 
 from __future__ import annotations
 
+import logging
 import time
 from collections import OrderedDict
 from threading import Lock
+
+logger = logging.getLogger(__name__)
 
 
 class ReasoningCache:
@@ -41,6 +44,13 @@ class ReasoningCache:
             self._data[tool_call_id] = (reasoning, now)
             self._data.move_to_end(tool_call_id)
             self._evict_locked(now)
+            size = len(self._data)
+        logger.info(
+            "reasoning cache PUT id=%s len=%d size=%d",
+            tool_call_id,
+            len(reasoning),
+            size,
+        )
 
     def get(self, tool_call_id: str) -> str | None:
         if not tool_call_id:
@@ -49,13 +59,16 @@ class ReasoningCache:
             now = time.monotonic()
             entry = self._data.get(tool_call_id)
             if entry is None:
+                logger.info("reasoning cache MISS id=%s", tool_call_id)
                 return None
             reasoning, ts = entry
             if now - ts > self._ttl:
                 del self._data[tool_call_id]
+                logger.info("reasoning cache EXPIRED id=%s", tool_call_id)
                 return None
             self._data.move_to_end(tool_call_id)
-            return reasoning
+        logger.info("reasoning cache HIT id=%s len=%d", tool_call_id, len(reasoning))
+        return reasoning
 
     def __len__(self) -> int:
         with self._lock:

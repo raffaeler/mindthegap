@@ -1,6 +1,6 @@
 [project]
 name = "mindthegap"
-version = "0.1.0"
+version = "0.2.0"
 description = "Stitch/unstitch proxy that preserves DeepSeek reasoning_content for OpenAI-compatible clients"
 authors = [
     { name = "Raffaele Rialdi", email = "raffaeler@vevy.com" }
