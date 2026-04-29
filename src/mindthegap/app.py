@@ -26,11 +26,57 @@ def _redact_headers(headers: Mapping[str, str]) -> dict[str, str]:
     return {k: ("<redacted>" if k.lower() in _REDACT_HEADERS else v) for k, v in headers.items()}
 
 
-def _safe_decode(payload: bytes, limit: int = 8192) -> str:
+def _safe_decode(payload: bytes, limit: int = 65536) -> str:
     text = payload.decode("utf-8", errors="replace")
     if len(text) > limit:
         return text[:limit] + f"... <truncated, total {len(text)} chars>"
     return text
+
+
+def _summarize_messages(payload: bytes) -> str | None:
+    """Return a compact per-message summary so we can always see the full
+    message sequence (role / tool_calls / reasoning_content presence /
+    content preview) even when the raw body would otherwise be truncated.
+
+    Returns ``None`` if the payload isn't a JSON object with a ``messages``
+    list \u2014 in which case the caller should just rely on the raw dump.
+    """
+    try:
+        data = json.loads(payload.decode("utf-8", errors="replace"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    messages = data.get("messages")
+    if not isinstance(messages, list):
+        return None
+    lines: list[str] = []
+    for i, msg in enumerate(messages):
+        if not isinstance(msg, dict):
+            lines.append(f"  [{i}] <non-dict>")
+            continue
+        role = msg.get("role")
+        content = msg.get("content")
+        has_tool_calls = bool(msg.get("tool_calls"))
+        has_reasoning = "reasoning_content" in msg
+        reasoning_len = (
+            len(msg["reasoning_content"])
+            if has_reasoning and isinstance(msg["reasoning_content"], str)
+            else 0
+        )
+        if isinstance(content, str):
+            preview = content[:120].replace("\n", "\\n")
+            content_desc = f"str({len(content)}): {preview!r}"
+        elif content is None:
+            content_desc = "None"
+        else:
+            content_desc = f"{type(content).__name__}"
+        lines.append(
+            f"  [{i}] role={role} tool_calls={has_tool_calls} "
+            f"reasoning_content={'yes(' + str(reasoning_len) + ')' if has_reasoning else 'no'} "
+            f"content={content_desc}"
+        )
+    return "\n".join(lines)
 
 
 def _log_upstream_error(
@@ -46,15 +92,18 @@ def _log_upstream_error(
     Logged at WARNING so it surfaces without enabling DEBUG. Authorization
     and similar secret-bearing headers are redacted.
     """
+    summary = _summarize_messages(request_body)
     logger.warning(
         "Upstream %s %s returned %d\n"
         "  request headers: %s\n"
+        "  request messages summary:\n%s\n"
         "  request body: %s\n"
         "  response body: %s",
         method,
         url,
         status,
         _redact_headers(request_headers),
+        summary if summary is not None else "  <not a chat-completions JSON body>",
         _safe_decode(request_body),
         _safe_decode(response_body),
     )
