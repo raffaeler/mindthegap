@@ -5,8 +5,8 @@ import pytest
 import respx
 from fastapi.testclient import TestClient
 
-from oaipatch.app import create_app
-from oaipatch.config import Settings
+from mindthegap.app import create_app
+from mindthegap.config import Settings
 
 
 @pytest.fixture

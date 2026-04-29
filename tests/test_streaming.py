@@ -2,8 +2,8 @@ import json
 
 import pytest
 
-from oaipatch.config import Settings
-from oaipatch.streaming import stitch_sse
+from mindthegap.config import Settings
+from mindthegap.streaming import stitch_sse
 
 
 async def _collect(gen):

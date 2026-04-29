@@ -1,4 +1,4 @@
-# oaipatch
+# mindthegap
 
 A localhost stitch/unstitch HTTPS proxy that lets minimal OpenAI-compatible
 clients (such as the GitHub Copilot CLI) talk to **DeepSeek reasoning models**
@@ -12,7 +12,7 @@ sends the conversation back on the next turn, DeepSeek rejects the request
 with HTTP 400 (`reasoning_content must be passed back`) and multi-turn chats
 break.
 
-`oaipatch` sits between the client and DeepSeek and:
+`mindthegap` sits between the client and DeepSeek and:
 
 - **Stitches** every assistant response by folding `reasoning_content` into
   `content` wrapped in `<think>...</think>` tags. The client persists this
@@ -40,8 +40,8 @@ the closing `</think>` when real content begins (or on `finish_reason`).
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # 2. Clone
-git clone https://github.com/<your-org-or-user>/oaipatch.git
-cd oaipatch
+git clone https://github.com/raffaeler/mindthegap.git
+cd mindthegap
 
 # 3. Create the virtualenv and install dependencies
 uv sync
@@ -57,8 +57,8 @@ cp config.example.json config.json
 powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 
 # 2. Clone
-git clone https://github.com/<your-org-or-user>/oaipatch.git
-Set-Location oaipatch
+git clone https://github.com/raffaeler/mindthegap.git
+Set-Location mindthegap
 
 # 3. Create the virtualenv and install dependencies
 uv sync
@@ -70,23 +70,23 @@ Copy-Item config.example.json config.json
 ## Run
 
 ```bash
-uv run oaipatch --config ./config.json
-# equivalent: uv run python -m oaipatch
+uv run mindthegap --config ./config.json
+# equivalent: uv run python -m mindthegap
 ```
 
 The proxy binds `127.0.0.1:3333` over **HTTPS** by default. Override at the
 command line:
 
 ```
-uv run oaipatch --host 127.0.0.1 --port 3333 --log-level INFO --cert-dir ./certs
+uv run mindthegap --host 127.0.0.1 --port 3333 --log-level INFO --cert-dir ./certs
 ```
 
-You can also point at an alternate config via the `OAIPATCH_CONFIG`
+You can also point at an alternate config via the `MINDTHEGAP_CONFIG`
 environment variable.
 
 ## TLS / self-signed certificate
 
-`oaipatch` always serves HTTPS — DeepSeek and the Copilot CLI both expect
+`mindthegap` always serves HTTPS — DeepSeek and the Copilot CLI both expect
 a TLS endpoint. On first launch the proxy generates its **own** self-signed
 certificate (RSA-2048, 10-year validity, with a SAN extension covering
 `localhost`, your machine hostname, FQDN, `127.0.0.1` and `::1`) and stores
@@ -94,8 +94,8 @@ it under:
 
 | OS              | Path                                                     |
 | --------------- | -------------------------------------------------------- |
-| Linux / macOS   | `$XDG_CONFIG_HOME/oaipatch/` (default `~/.config/oaipatch/`) |
-| Windows         | `%APPDATA%\oaipatch\`                                    |
+| Linux / macOS   | `$XDG_CONFIG_HOME/mindthegap/` (default `~/.config/mindthegap/`) |
+| Windows         | `%APPDATA%\mindthegap\`                                    |
 
 Files: `cert.pem` (public certificate) and `key.pem` (private key, mode
 `0600` on POSIX). The cert is **reused** on subsequent launches and only
@@ -131,7 +131,7 @@ Pick whichever fits your client.
 #### Linux — system-wide CA bundle (curl, Python `ssl`, etc.)
 
 ```bash
-sudo cp ~/.config/oaipatch/cert.pem /usr/local/share/ca-certificates/oaipatch.crt
+sudo cp ~/.config/mindthegap/cert.pem /usr/local/share/ca-certificates/mindthegap.crt
 sudo update-ca-certificates
 ```
 
@@ -142,8 +142,8 @@ On Fedora/RHEL: copy to `/etc/pki/ca-trust/source/anchors/` then
 
 ```bash
 mkdir -p "$HOME/.pki/nssdb"
-certutil -d "sql:$HOME/.pki/nssdb" -A -t "C,," -n oaipatch \
-  -i ~/.config/oaipatch/cert.pem
+certutil -d "sql:$HOME/.pki/nssdb" -A -t "C,," -n mindthegap \
+  -i ~/.config/mindthegap/cert.pem
 ```
 
 #### macOS — login keychain
@@ -151,7 +151,7 @@ certutil -d "sql:$HOME/.pki/nssdb" -A -t "C,," -n oaipatch \
 ```bash
 security add-trusted-cert -r trustRoot \
   -k "$HOME/Library/Keychains/login.keychain-db" \
-  ~/.config/oaipatch/cert.pem
+  ~/.config/mindthegap/cert.pem
 ```
 
 #### Windows — **Trusted Root Certification Authorities**
@@ -162,14 +162,14 @@ is not consulted for server-auth validation.
 PowerShell (current user, no admin):
 
 ```powershell
-Import-Certificate -FilePath "$env:APPDATA\oaipatch\cert.pem" `
+Import-Certificate -FilePath "$env:APPDATA\mindthegap\cert.pem" `
   -CertStoreLocation Cert:\CurrentUser\Root
 ```
 
 PowerShell (machine-wide, **Administrator**):
 
 ```powershell
-Import-Certificate -FilePath "$env:APPDATA\oaipatch\cert.pem" `
+Import-Certificate -FilePath "$env:APPDATA\mindthegap\cert.pem" `
   -CertStoreLocation Cert:\LocalMachine\Root
 ```
 
@@ -185,23 +185,23 @@ This is the lightest-touch option and works well for one-off use.
 Linux / macOS:
 
 ```bash
-export NODE_EXTRA_CA_CERTS="$HOME/.config/oaipatch/cert.pem"
-export SSL_CERT_FILE="$HOME/.config/oaipatch/cert.pem"
-export REQUESTS_CA_BUNDLE="$HOME/.config/oaipatch/cert.pem"
+export NODE_EXTRA_CA_CERTS="$HOME/.config/mindthegap/cert.pem"
+export SSL_CERT_FILE="$HOME/.config/mindthegap/cert.pem"
+export REQUESTS_CA_BUNDLE="$HOME/.config/mindthegap/cert.pem"
 ```
 
 Windows (PowerShell):
 
 ```powershell
-$env:NODE_EXTRA_CA_CERTS = "$env:APPDATA\oaipatch\cert.pem"
-$env:SSL_CERT_FILE       = "$env:APPDATA\oaipatch\cert.pem"
-$env:REQUESTS_CA_BUNDLE  = "$env:APPDATA\oaipatch\cert.pem"
+$env:NODE_EXTRA_CA_CERTS = "$env:APPDATA\mindthegap\cert.pem"
+$env:SSL_CERT_FILE       = "$env:APPDATA\mindthegap\cert.pem"
+$env:REQUESTS_CA_BUNDLE  = "$env:APPDATA\mindthegap\cert.pem"
 ```
 
 ## Use with GitHub Copilot CLI
 
 ```bash
-export NODE_EXTRA_CA_CERTS="$HOME/.config/oaipatch/cert.pem"     # trust the proxy
+export NODE_EXTRA_CA_CERTS="$HOME/.config/mindthegap/cert.pem"     # trust the proxy
 export COPILOT_PROVIDER_BASE_URL="https://127.0.0.1:3333/v1"
 export COPILOT_PROVIDER_API_KEY="sk-...your-deepseek-key..."
 export COPILOT_PROVIDER_TYPE="openai"
@@ -210,7 +210,7 @@ copilot
 ```
 
 Windows (PowerShell): swap each `export NAME=value` for `$env:NAME = "value"`
-and use `$env:APPDATA\oaipatch\cert.pem` for the CA path.
+and use `$env:APPDATA\mindthegap\cert.pem` for the CA path.
 
 The proxy passes the `Authorization` header straight through to DeepSeek.
 
@@ -224,26 +224,26 @@ The proxy passes the `Authorization` header straight through to DeepSeek.
 Quick health check:
 
 ```bash
-curl --cacert ~/.config/oaipatch/cert.pem https://127.0.0.1:3333/healthz
+curl --cacert ~/.config/mindthegap/cert.pem https://127.0.0.1:3333/healthz
 ```
 
 Windows (PowerShell):
 
 ```powershell
-curl.exe --cacert "$env:APPDATA\oaipatch\cert.pem" https://127.0.0.1:3333/healthz
+curl.exe --cacert "$env:APPDATA\mindthegap\cert.pem" https://127.0.0.1:3333/healthz
 ```
 
 ## Logs
 
-`oaipatch` runs under uvicorn and writes **all logs to stderr** — there is
+`mindthegap` runs under uvicorn and writes **all logs to stderr** — there is
 no log file by default. Capture them with shell redirection:
 
 ```bash
 # Linux / macOS
-uv run oaipatch --config ./config.json 2> ~/.config/oaipatch/proxy.log
+uv run mindthegap --config ./config.json 2> ~/.config/mindthegap/proxy.log
 
 # Windows (PowerShell)
-uv run oaipatch --config .\config.json 2> "$env:APPDATA\oaipatch\proxy.log"
+uv run mindthegap --config .\config.json 2> "$env:APPDATA\mindthegap\proxy.log"
 ```
 
 Log verbosity is controlled by `log_level` in `config.json` or the
@@ -270,7 +270,7 @@ useful when investigating stitch/unstitch issues.
 | `tls.renew_within_days` | `30` | Regenerate when expiry is closer than this. |
 
 CLI flags `--config`, `--host`, `--port`, `--log-level`, `--cert-dir`
-override the file. The config path can also be set via `OAIPATCH_CONFIG`.
+override the file. The config path can also be set via `MINDTHEGAP_CONFIG`.
 
 ## Development
 

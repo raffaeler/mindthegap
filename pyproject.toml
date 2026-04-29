@@ -1,20 +1,23 @@
 [project]
-name = "oaipatch"
+name = "mindthegap"
 version = "0.1.0"
 description = "Stitch/unstitch proxy that preserves DeepSeek reasoning_content for OpenAI-compatible clients"
 authors = [
     { name = "Raffaele Rialdi", email = "raffaeler@vevy.com" }
 ]
 requires-python = ">=3.11"
+license = "MIT"
+urls = { Homepage = "https://github.com/raffaeler/mindthegap", Repository = "https://github.com/raffaeler/mindthegap", Issues = "https://github.com/raffaeler/mindthegap/issues" }
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "httpx>=0.27",
     "pydantic>=2.7",
+    "cryptography>=43",
 ]
 
 [project.scripts]
-oaipatch = "oaipatch.cli:main"
+mindthegap = "mindthegap.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.9.4,<0.10.0"]

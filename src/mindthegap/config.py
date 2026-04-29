@@ -12,6 +12,16 @@ from pydantic import BaseModel, Field
 UnstitchMode = Literal["drop", "keep", "forward"]
 
 
+class TlsConfig(BaseModel):
+    cert_dir: str | None = None
+    cert_file: str | None = None
+    key_file: str | None = None
+    san_dns: list[str] | None = None
+    san_ip: list[str] | None = None
+    validity_days: int = 3650
+    renew_within_days: int = 30
+
+
 class Settings(BaseModel):
     upstream_base_url: str = "https://api.deepseek.com"
     host: str = "127.0.0.1"
@@ -22,6 +32,7 @@ class Settings(BaseModel):
     unstitch_when_not_reasoner: UnstitchMode = "drop"
     request_timeout_s: float = 600.0
     log_level: str = "INFO"
+    tls: TlsConfig = Field(default_factory=TlsConfig)
 
     def upstream(self, path: str) -> str:
         base = self.upstream_base_url.rstrip("/")
@@ -39,7 +50,7 @@ def load_settings(path: str | os.PathLike[str] | None = None) -> Settings:
     candidate: Path | None
     if path is not None:
         candidate = Path(path)
-    elif env := os.environ.get("OAIPATCH_CONFIG"):
+    elif env := os.environ.get("MINDTHEGAP_CONFIG"):
         candidate = Path(env)
     else:
         default = Path.cwd() / "config.json"

@@ -1,5 +1,5 @@
-from oaipatch.config import Settings
-from oaipatch.transforms import (
+from mindthegap.config import Settings
+from mindthegap.transforms import (
     stitch_message,
     transform_request_body,
     transform_response_body,

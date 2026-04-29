@@ -16,7 +16,7 @@ from .config import Settings, load_settings
 from .streaming import stitch_sse
 from .transforms import transform_request_body, transform_response_body
 
-logger = logging.getLogger("oaipatch")
+logger = logging.getLogger("mindthegap")
 
 # Hop-by-hop headers that must not be forwarded (RFC 7230 §6.1) plus a
 # couple that httpx will recompute.
@@ -53,7 +53,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app.state.settings = cfg
             yield
 
-    app = FastAPI(title="oaipatch", lifespan=lifespan)
+    app = FastAPI(title="mindthegap", lifespan=lifespan)
 
     @app.get("/healthz")
     async def healthz() -> dict[str, bool]:
