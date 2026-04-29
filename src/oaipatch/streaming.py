@@ -22,6 +22,11 @@ from .config import Settings
 class _ChoiceState:
     opened: bool = False
     closed: bool = False
+    # Trailing newlines already emitted at the tail of the reasoning stream.
+    # Used to guarantee exactly one blank line (== 2 newlines) before
+    # ``</think>`` without ever introducing extra blank lines inside the
+    # think block when the upstream reasoning already ends with newlines.
+    trailing_newlines: int = 0
 
 
 @dataclass
@@ -34,6 +39,33 @@ class _StreamState:
             st = _ChoiceState()
             self.per_choice[idx] = st
         return st
+
+
+def _count_trailing_newlines(s: str) -> int:
+    n = 0
+    for ch in reversed(s):
+        if ch == "\n":
+            n += 1
+        else:
+            break
+    return n
+
+
+def _close_padding(trailing: int) -> str:
+    """Return the prefix to prepend to ``</think>`` so it always renders on
+    its own line WITHOUT a blank line above it.
+
+    We use a Markdown hard line break (two trailing spaces + ``\\n``) so the
+    client's Markdown renderer doesn't collapse the bare ``\\n`` into a
+    space and put the closing tag inline with the reasoning text.
+
+    - ``trailing == 0``: emit ``"  \\n"`` (hard break)
+    - ``trailing >= 1``: the upstream already wrote ``\\n`` at the tail, so
+      we can't retroactively insert two spaces before it. The best we can do
+      is emit nothing and accept the bare ``\\n`` (renderers will then show
+      ``</think>`` flowed inline OR on its own line depending on parser).
+    """
+    return "" if trailing >= 1 else "  \n"
 
 
 def _rewrite_choice(
@@ -59,11 +91,17 @@ def _rewrite_choice(
         if not st.opened:
             pieces.append(f"{settings.think_tag_open}\n")
             st.opened = True
+            st.trailing_newlines = 1
         pieces.append(reasoning)
+        # Update trailing-newline tally based on the new piece.
+        if reasoning.strip("\n") == "":
+            st.trailing_newlines += len(reasoning)
+        else:
+            st.trailing_newlines = _count_trailing_newlines(reasoning)
 
     has_real_content = isinstance(content, str) and content != ""
     if has_real_content and st.opened and not st.closed:
-        pieces.append(f"\n{settings.think_tag_close}\n")
+        pieces.append(f"{_close_padding(st.trailing_newlines)}{settings.think_tag_close}\n\n")
         st.closed = True
 
     if has_real_content:
@@ -71,7 +109,7 @@ def _rewrite_choice(
 
     finish_reason = new_choice.get("finish_reason")
     if finish_reason and st.opened and not st.closed:
-        pieces.append(f"\n{settings.think_tag_close}\n")
+        pieces.append(f"{_close_padding(st.trailing_newlines)}{settings.think_tag_close}\n\n")
         st.closed = True
 
     if pieces:
@@ -108,27 +146,48 @@ async def stitch_sse(
         buffer += chunk
         while b"\n" in buffer:
             line, buffer = buffer.split(b"\n", 1)
-            out = _process_line(line, state, settings)
-            if out is not None:
+            for out in _process_line(line, state, settings):
                 yield out + b"\n"
     if buffer:
-        out = _process_line(buffer, state, settings)
-        if out is not None:
+        for out in _process_line(buffer, state, settings):
             yield out
+    # Final safety net: if the upstream ended without ever closing an opened
+    # <think> block (truncated stream, missing finish_reason, no [DONE]),
+    # emit synthetic close chunks so the assistant message persisted by the
+    # client always has a matching </think>.
+    for idx, st in state.per_choice.items():
+        if st.opened and not st.closed:
+            yield _synthetic_close_chunk(idx, st, settings)
+            st.closed = True
 
 
-def _process_line(line: bytes, state: _StreamState, settings: Settings) -> bytes | None:
+def _synthetic_close_chunk(idx: int, st: _ChoiceState, settings: Settings) -> bytes:
+    delta = {"content": f"{_close_padding(st.trailing_newlines)}{settings.think_tag_close}\n\n"}
+    payload = {"choices": [{"index": idx, "delta": delta}]}
+    return b"data: " + json.dumps(payload, ensure_ascii=False).encode("utf-8") + b"\n\n"
+
+
+def _process_line(line: bytes, state: _StreamState, settings: Settings) -> list[bytes]:
     stripped = line.rstrip(b"\r")
     if not stripped.startswith(b"data:"):
-        return stripped
+        return [stripped]
     data = stripped[5:].lstrip()
-    if data == b"[DONE]" or data == b"":
-        return stripped
+    if data == b"[DONE]":
+        # Flush any unterminated <think> blocks before signalling end-of-stream
+        # so the client's persisted message has a matching </think>.
+        prelude: list[bytes] = []
+        for idx, st in state.per_choice.items():
+            if st.opened and not st.closed:
+                prelude.append(_synthetic_close_chunk(idx, st, settings))
+                st.closed = True
+        return [*prelude, stripped]
+    if data == b"":
+        return [stripped]
     try:
         payload = json.loads(data)
     except json.JSONDecodeError:
-        return stripped
+        return [stripped]
     if not isinstance(payload, dict):
-        return stripped
+        return [stripped]
     new_payload = _process_chunk(payload, state, settings)
-    return b"data: " + json.dumps(new_payload, ensure_ascii=False).encode("utf-8")
+    return [b"data: " + json.dumps(new_payload, ensure_ascii=False).encode("utf-8")]

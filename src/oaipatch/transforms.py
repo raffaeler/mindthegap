@@ -15,6 +15,18 @@ def _think_pattern(settings: Settings) -> re.Pattern[str]:
     )
 
 
+def _unclosed_think_pattern(settings: Settings) -> re.Pattern[str]:
+    """Match a leading ``<think>`` with no matching closing tag anywhere after.
+
+    Captures everything from after the opening tag to the end of the string.
+    Used to recover from truncated/streaming-broken assistant messages where
+    the closing ``</think>`` was never emitted.
+    """
+    return re.compile(
+        rf"^\s*{re.escape(settings.think_tag_open)}(?![\s\S]*{re.escape(settings.think_tag_close)})([\s\S]*)$",
+    )
+
+
 def stitch_message(message: dict[str, Any], settings: Settings) -> dict[str, Any]:
     """Move ``reasoning_content`` into ``content`` wrapped in think tags.
 
@@ -30,7 +42,14 @@ def stitch_message(message: dict[str, Any], settings: Settings) -> dict[str, Any
     content = out.get("content")
     open_tag = settings.think_tag_open
     close_tag = settings.think_tag_close
-    wrapped = f"{open_tag}\n{reasoning}\n{close_tag}\n"
+    # Normalize the tail of the reasoning block: strip any trailing newlines
+    # and append two spaces before the final \n. Those two trailing spaces
+    # are a Markdown hard line break, which makes the closing </think>
+    # render on its own line WITHOUT inserting a blank line above it.
+    # (A bare \n would otherwise be collapsed to a space by the client's
+    # Markdown renderer and the tag would appear inline with the reasoning.)
+    reasoning_body = reasoning.rstrip("\n").rstrip()
+    wrapped = f"{open_tag}\n{reasoning_body}  \n{close_tag}\n\n"
     if isinstance(content, str) and content:
         out["content"] = wrapped + content
     else:
@@ -57,6 +76,7 @@ def unstitch_messages(
         return [dict(m) for m in messages]
 
     pattern = _think_pattern(settings)
+    unclosed = _unclosed_think_pattern(settings)
     out: list[dict[str, Any]] = []
     for msg in messages:
         new = dict(msg)
@@ -68,11 +88,20 @@ def unstitch_messages(
             out.append(new)
             continue
         match = pattern.match(content)
-        if not match:
-            out.append(new)
-            continue
-        reasoning = match.group(1).strip("\n")
-        stripped = content[match.end() :]
+        if match:
+            reasoning = match.group(1).strip("\n")
+            stripped = content[match.end() :]
+        else:
+            # Recover from a truncated assistant message: leading <think>
+            # without a matching </think> (e.g. upstream stream cut off
+            # mid-reasoning). Treat the entire remainder as reasoning so the
+            # forwarded request stays coherent for reasoner models.
+            unclosed_match = unclosed.match(content)
+            if not unclosed_match:
+                out.append(new)
+                continue
+            reasoning = unclosed_match.group(1).strip("\n")
+            stripped = ""
         new["content"] = stripped
         if mode == "forward":
             new["reasoning_content"] = reasoning
