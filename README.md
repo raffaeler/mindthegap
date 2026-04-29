@@ -19,15 +19,15 @@ The exact error is printed by the GitHub Copilot CLI:
 `mindthegap` sits between the client and DeepSeek and:
 
 - **Stitches** every assistant response by folding `reasoning_content` into
-  `content` wrapped in `<think>...</think>` tags. The client persists this
+  `content` wrapped in `[[think]]...[[/think]]` tags. The client persists this
   combined string in its local history without knowing anything special.
 - **Unstitches** every outgoing request by extracting the leading
-  `<think>...</think>` block from each assistant message and moving it back
+  `[[think]]...[[/think]]` block from each assistant message and moving it back
   into `reasoning_content` before forwarding upstream.
 
 Streaming SSE responses are handled too: a per-choice state machine emits
-the opening `<think>` tag, replays reasoning deltas as `content`, and emits
-the closing `</think>` when real content begins (or on `finish_reason`).
+the opening `[[think]]` tag, replays reasoning deltas as `content`, and emits
+the closing `[[/think]]` when real content begins (or on `finish_reason`).
 
 ## Requirements
 
@@ -262,7 +262,7 @@ useful when investigating stitch/unstitch issues.
 | `upstream_base_url` | `https://api.deepseek.com` | Upstream OpenAI-compatible API root |
 | `host` | `127.0.0.1` | Bind address |
 | `port` | `3333` | Bind port |
-| `think_tag_open` / `think_tag_close` | `<think>` / `</think>` | Tags wrapping the reasoning block |
+| `think_tag_open` / `think_tag_close` | `[[think]]` / `[[/think]]` | Tags wrapping the reasoning block. The default uses double square brackets because some chat clients (e.g. GitHub Copilot CLI) strip HTML-like `<think>`/`</think>` tags and their content during persistence; the bracket form survives. |
 | `reasoner_models` | `["deepseek-reasoner", "deepseek-v4-pro"]` | Models for which `reasoning_content` is forwarded upstream |
 | `unstitch_when_not_reasoner` | `"drop"` | `drop` strips the block, `keep` leaves it inline, `forward` still sends it as `reasoning_content` |
 | `request_timeout_s` | `600` | Upstream HTTP timeout (seconds) |

@@ -39,8 +39,8 @@ async def test_stream_reasoning_then_content_emits_think_tags():
     payloads = [json.loads(line) for line in data_lines if line != "[DONE]"]
     contents = [p["choices"][0]["delta"].get("content", "") for p in payloads]
     joined = "".join(c for c in contents if isinstance(c, str))
-    assert "<think>\nlet me think" in joined
-    assert "</think>\n\nHello world" in joined
+    assert "[[think]]\nlet me think" in joined
+    assert "[[/think]]\n\nHello world" in joined
     # reasoning_content must never leak downstream
     for p in payloads:
         assert "reasoning_content" not in p["choices"][0]["delta"]
@@ -55,7 +55,7 @@ async def test_stream_no_reasoning_passthrough_content():
     ]
     out = (await _collect(stitch_sse(_aiter(chunks), settings))).decode()
     assert "abc" in out
-    assert "<think>" not in out
+    assert "[[think]]" not in out
 
 
 @pytest.mark.asyncio
@@ -67,8 +67,8 @@ async def test_stream_closes_think_on_finish_without_content():
         b"data: [DONE]\n\n",
     ]
     out = (await _collect(stitch_sse(_aiter(chunks), settings))).decode()
-    assert "<think>" in out
-    assert "</think>" in out
+    assert "[[think]]" in out
+    assert "[[/think]]" in out
 
 
 @pytest.mark.asyncio
@@ -82,17 +82,17 @@ async def test_stream_done_passthrough():
 @pytest.mark.asyncio
 async def test_stream_closes_think_before_done_when_finish_missing():
     # Reasoning starts, no real content, no finish_reason — just [DONE].
-    # The proxy must still inject </think> so the client persists a balanced
-    # message; otherwise the next turn ships an unclosed <think> upstream.
+    # The proxy must still inject [[/think]] so the client persists a balanced
+    # message; otherwise the next turn ships an unclosed [[think]] upstream.
     settings = Settings()
     chunks = [
         _sse({"choices": [{"index": 0, "delta": {"reasoning_content": "abrupt"}}]}),
         b"data: [DONE]\n\n",
     ]
     out = (await _collect(stitch_sse(_aiter(chunks), settings))).decode()
-    # Order matters: </think> must appear before [DONE]
-    assert out.index("</think>") < out.index("[DONE]")
-    assert "<think>" in out
+    # Order matters: [[/think]] must appear before [DONE]
+    assert out.index("[[/think]]") < out.index("[DONE]")
+    assert "[[think]]" in out
 
 
 @pytest.mark.asyncio
@@ -103,15 +103,15 @@ async def test_stream_closes_think_at_eof_without_done():
         _sse({"choices": [{"index": 0, "delta": {"reasoning_content": "cut off"}}]}),
     ]
     out = (await _collect(stitch_sse(_aiter(chunks), settings))).decode()
-    assert "<think>" in out
-    assert "</think>" in out
+    assert "[[think]]" in out
+    assert "[[/think]]" in out
 
 
 @pytest.mark.asyncio
 async def test_stream_emits_markdown_hard_break_before_close_when_no_trailing_newline():
     # Reasoning ends without a trailing \n. Proxy must insert a Markdown
-    # hard line break ("  \n") before </think> so renderers don't collapse
-    # the bare \n into a space and put </think> inline with the reasoning.
+    # hard line break ("  \n") before [[/think]] so renderers don't collapse
+    # the bare \n into a space and put [[/think]] inline with the reasoning.
     settings = Settings()
     chunks = [
         _sse({"choices": [{"index": 0, "delta": {"reasoning_content": "Answer: 3 balls."}}]}),
@@ -129,7 +129,7 @@ async def test_stream_emits_markdown_hard_break_before_close_when_no_trailing_ne
         for p in payloads
         if isinstance(p["choices"][0]["delta"].get("content"), str)
     )
-    assert "Answer: 3 balls.  \n</think>\n\nJohn" in joined
+    assert "Answer: 3 balls.  \n[[/think]]\n\nJohn" in joined
 
     settings = Settings()
     chunks = [
@@ -138,12 +138,12 @@ async def test_stream_emits_markdown_hard_break_before_close_when_no_trailing_ne
         b"data: [DONE]\n\n",
     ]
     out = (await _collect(stitch_sse(_aiter(chunks), settings))).decode()
-    assert out.count("</think>") == 1
+    assert out.count("[[/think]]") == 1
 
 
 @pytest.mark.asyncio
 async def test_stream_does_not_add_blank_line_when_reasoning_already_ends_in_newlines():
-    # The closing </think> must always sit on its own line with NO blank
+    # The closing [[/think]] must always sit on its own line with NO blank
     # line before it. Trailing \n already in the upstream reasoning must
     # not be supplemented with another \n by the proxy.
     settings = Settings()
@@ -163,9 +163,9 @@ async def test_stream_does_not_add_blank_line_when_reasoning_already_ends_in_new
         for p in payloads
         if isinstance(p["choices"][0]["delta"].get("content"), str)
     )
-    assert "thinking done\n</think>\n\nanswer" in joined
+    assert "thinking done\n[[/think]]\n\nanswer" in joined
     # No double-newline (blank line) immediately before the closing tag:
-    assert "\n\n</think>" not in joined
+    assert "\n\n[[/think]]" not in joined
 
 
 @pytest.mark.asyncio
@@ -189,8 +189,8 @@ async def test_stream_handles_reasoning_split_across_chunks_with_trailing_newlin
         if isinstance(p["choices"][0]["delta"].get("content"), str)
     )
     # Reasoning already ends with \n\n — proxy must not add yet another
-    # newline before </think>. (We can't retract the upstream's blank line,
-    # but we must not make it worse.) After </think> we always want a blank
+    # newline before [[/think]]. (We can't retract the upstream's blank line,
+    # but we must not make it worse.) After [[/think]] we always want a blank
     # line so Markdown renderers don't fold the next content onto the tag.
-    assert "</think>\n\nanswer" in joined
-    assert "\n\n\n</think>" not in joined
+    assert "[[/think]]\n\nanswer" in joined
+    assert "\n\n\n[[/think]]" not in joined

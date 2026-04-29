@@ -26,8 +26,8 @@ class Settings(BaseModel):
     upstream_base_url: str = "https://api.deepseek.com"
     host: str = "127.0.0.1"
     port: int = 3333
-    think_tag_open: str = "<think>"
-    think_tag_close: str = "</think>"
+    think_tag_open: str = "[[think]]"
+    think_tag_close: str = "[[/think]]"
     reasoner_models: list[str] = Field(
         default_factory=lambda: ["deepseek-reasoner", "deepseek-v4-pro"]
     )

@@ -62,7 +62,7 @@ def test_stitch_indexes_reasoning_under_tool_call_ids():
 
 def test_unstitch_recovers_reasoning_for_tool_call_assistant_with_null_content():
     """Reproduces the Copilot CLI failure: client persisted the assistant
-    tool-call message with content=null, so the <think> block is gone, but
+    tool-call message with content=null, so the [[think]] block is gone, but
     the cache still has the reasoning indexed by tool_call_id.
     """
     c = ReasoningCache()
@@ -98,13 +98,13 @@ def test_unstitch_does_not_overwrite_existing_reasoning_content():
 
 
 def test_unstitch_prefers_inline_think_block_over_cache():
-    """If the client preserved the <think> block we trust that over cache."""
+    """If the client preserved the [[think]] block we trust that over cache."""
     c = ReasoningCache()
     c.put("call_1", "cached reasoning")
     messages = [
         {
             "role": "assistant",
-            "content": "<think>\ninline reasoning\n</think>\n\n",
+            "content": "[[think]]\ninline reasoning\n[[/think]]\n\n",
             "tool_calls": [{"id": "call_1"}],
         }
     ]
