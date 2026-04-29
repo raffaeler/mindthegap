@@ -102,7 +102,15 @@ def unstitch_messages(
                 continue
             reasoning = unclosed_match.group(1).strip("\n")
             stripped = ""
-        new["content"] = stripped
+        # DeepSeek (and the OpenAI spec) expects assistant messages that
+        # carry ``tool_calls`` to use ``content: null`` rather than an empty
+        # string when there is no textual content. After unstitching the
+        # leading ``<think>...</think>`` block the residual content is often
+        # empty for tool-call messages, so normalize it back to None.
+        if stripped == "" and new.get("tool_calls"):
+            new["content"] = None
+        else:
+            new["content"] = stripped
         if mode == "forward":
             new["reasoning_content"] = reasoning
         out.append(new)

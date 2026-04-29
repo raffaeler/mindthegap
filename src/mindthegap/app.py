@@ -18,6 +18,48 @@ from .transforms import transform_request_body, transform_response_body
 
 logger = logging.getLogger("mindthegap")
 
+# Header values to redact in diagnostic dumps so secrets never reach the log.
+_REDACT_HEADERS = {"authorization", "x-api-key", "api-key", "proxy-authorization"}
+
+
+def _redact_headers(headers: Mapping[str, str]) -> dict[str, str]:
+    return {k: ("<redacted>" if k.lower() in _REDACT_HEADERS else v) for k, v in headers.items()}
+
+
+def _safe_decode(payload: bytes, limit: int = 8192) -> str:
+    text = payload.decode("utf-8", errors="replace")
+    if len(text) > limit:
+        return text[:limit] + f"... <truncated, total {len(text)} chars>"
+    return text
+
+
+def _log_upstream_error(
+    method: str,
+    url: str,
+    status: int,
+    request_headers: Mapping[str, str],
+    request_body: bytes,
+    response_body: bytes,
+) -> None:
+    """Dump enough context to debug upstream rejections (4xx/5xx).
+
+    Logged at WARNING so it surfaces without enabling DEBUG. Authorization
+    and similar secret-bearing headers are redacted.
+    """
+    logger.warning(
+        "Upstream %s %s returned %d\n"
+        "  request headers: %s\n"
+        "  request body: %s\n"
+        "  response body: %s",
+        method,
+        url,
+        status,
+        _redact_headers(request_headers),
+        _safe_decode(request_body),
+        _safe_decode(response_body),
+    )
+
+
 # Hop-by-hop headers that must not be forwarded (RFC 7230 §6.1) plus a
 # couple that httpx will recompute.
 _HOP_BY_HOP = {
@@ -84,6 +126,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if upstream_resp.status_code >= 400:
                 err_body = await upstream_resp.aread()
                 await upstream_resp.aclose()
+                _log_upstream_error(
+                    "POST",
+                    upstream_url,
+                    upstream_resp.status_code,
+                    headers,
+                    payload,
+                    err_body,
+                )
                 return Response(
                     content=err_body,
                     status_code=upstream_resp.status_code,
@@ -108,6 +158,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         upstream_resp = await client.post(upstream_url, headers=headers, content=payload)
         resp_headers = _filter_headers(upstream_resp.headers)
         if upstream_resp.status_code >= 400:
+            _log_upstream_error(
+                "POST",
+                upstream_url,
+                upstream_resp.status_code,
+                headers,
+                payload,
+                upstream_resp.content,
+            )
             return Response(
                 content=upstream_resp.content,
                 status_code=upstream_resp.status_code,
@@ -141,6 +199,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             params=dict(request.query_params),
             content=body if body else None,
         )
+        if upstream_resp.status_code >= 400:
+            _log_upstream_error(
+                request.method,
+                upstream_url,
+                upstream_resp.status_code,
+                headers,
+                body,
+                upstream_resp.content,
+            )
         return Response(
             content=upstream_resp.content,
             status_code=upstream_resp.status_code,

@@ -128,6 +128,44 @@ def test_unstitch_handles_null_content():
     assert unstitch_messages(messages, S, "forward") == messages
 
 
+def test_unstitch_normalizes_empty_content_to_none_for_tool_calls():
+    # After stripping a leading <think> block, an assistant message that
+    # carries tool_calls must use content=None (not "") to satisfy DeepSeek
+    # / OpenAI strict validation of tool-call messages.
+    messages = [
+        {
+            "role": "assistant",
+            "content": "<think>\nplan\n</think>\n\n",
+            "tool_calls": [{"id": "1", "type": "function"}],
+        }
+    ]
+    out = unstitch_messages(messages, S, "forward")
+    assert out[0]["content"] is None
+    assert out[0]["tool_calls"] == [{"id": "1", "type": "function"}]
+    assert out[0]["reasoning_content"] == "plan"
+
+
+def test_unstitch_drop_also_normalizes_empty_for_tool_calls():
+    messages = [
+        {
+            "role": "assistant",
+            "content": "<think>\nplan\n</think>\n\n",
+            "tool_calls": [{"id": "1", "type": "function"}],
+        }
+    ]
+    out = unstitch_messages(messages, S, "drop")
+    assert out[0]["content"] is None
+    assert "reasoning_content" not in out[0]
+
+
+def test_unstitch_keeps_empty_string_when_no_tool_calls():
+    # No tool_calls => stay backward-compatible with the prior "" behavior.
+    messages = [{"role": "assistant", "content": "<think>\nplan\n</think>\n"}]
+    out = unstitch_messages(messages, S, "forward")
+    assert out[0]["content"] == ""
+    assert out[0]["reasoning_content"] == "plan"
+
+
 def test_transform_request_body_uses_forward_for_reasoner():
     body = {
         "model": "deepseek-reasoner",
