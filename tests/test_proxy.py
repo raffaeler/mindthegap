@@ -75,6 +75,38 @@ def test_chat_completions_nonstream_stitches_response(client):
 
 
 @respx.mock
+def test_chat_completions_does_not_forward_client_accept_encoding(client):
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["accept_encoding"] = request.headers.get("accept-encoding")
+        return httpx.Response(
+            200,
+            json={
+                "id": "x",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "Hello"},
+                        "finish_reason": "stop",
+                    }
+                ],
+            },
+        )
+
+    respx.post("https://upstream.test/v1/chat/completions").mock(side_effect=handler)
+
+    resp = client.post(
+        "/v1/chat/completions",
+        json={"model": "deepseek-reasoner", "messages": [{"role": "user", "content": "hi"}]},
+        headers={"accept-encoding": "br, zstd", "authorization": "Bearer sk-test"},
+    )
+
+    assert resp.status_code == 200
+    assert captured["accept_encoding"] != "br, zstd"
+
+
+@respx.mock
 def test_chat_completions_streaming_rewrites_sse(client):
     sse_body = (
         b'data: {"choices":[{"index":0,"delta":{"role":"assistant"}}]}\n\n'

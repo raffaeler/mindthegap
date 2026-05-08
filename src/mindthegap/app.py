@@ -113,6 +113,7 @@ def _log_upstream_error(
 # Hop-by-hop headers that must not be forwarded (RFC 7230 §6.1) plus a
 # couple that httpx will recompute.
 _HOP_BY_HOP = {
+    "accept-encoding",
     "connection",
     "keep-alive",
     "proxy-authenticate",
