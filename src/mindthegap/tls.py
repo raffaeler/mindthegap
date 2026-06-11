@@ -7,7 +7,6 @@ import ipaddress
 import logging
 import os
 import platform
-import socket
 import sys
 from pathlib import Path
 
@@ -46,20 +45,7 @@ def resolve_cert_paths(tls: TlsConfig) -> tuple[Path, Path]:
 
 
 def _auto_san_dns() -> list[str]:
-    names = ["localhost"]
-    try:
-        host = socket.gethostname()
-        if host and host not in names:
-            names.append(host)
-    except OSError:
-        pass
-    try:
-        fqdn = socket.getfqdn()
-        if fqdn and fqdn != "localhost" and fqdn not in names:
-            names.append(fqdn)
-    except OSError:
-        pass
-    return names
+    return ["localhost"]
 
 
 def _auto_san_ip() -> list[str]:
@@ -100,7 +86,7 @@ def generate_self_signed(tls: TlsConfig, cert_path: Path, key_path: Path) -> Non
         .not_valid_before(now - dt.timedelta(minutes=5))
         .not_valid_after(now + dt.timedelta(days=tls.validity_days))
         .add_extension(san, critical=False)
-        .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
+        .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
         .add_extension(
             x509.KeyUsage(
                 digital_signature=True,
@@ -108,7 +94,7 @@ def generate_self_signed(tls: TlsConfig, cert_path: Path, key_path: Path) -> Non
                 key_encipherment=True,
                 data_encipherment=False,
                 key_agreement=False,
-                key_cert_sign=True,
+                key_cert_sign=False,
                 crl_sign=False,
                 encipher_only=False,
                 decipher_only=False,
@@ -170,6 +156,27 @@ def _cert_needs_refresh(cert_path: Path, tls: TlsConfig) -> str | None:
         return f"expires {not_after.isoformat()}"
 
     try:
+        basic_constraints = cert.extensions.get_extension_for_class(x509.BasicConstraints).value
+    except x509.ExtensionNotFound:
+        return "missing BasicConstraints extension"
+    if basic_constraints.ca:
+        return "marked as CA (Copilot rejects CA certificates as TLS server certs)"
+
+    try:
+        key_usage = cert.extensions.get_extension_for_class(x509.KeyUsage).value
+    except x509.ExtensionNotFound:
+        return "missing KeyUsage extension"
+    if key_usage.key_cert_sign or key_usage.crl_sign:
+        return "key usage allows certificate signing"
+
+    try:
+        eku = cert.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value
+    except x509.ExtensionNotFound:
+        return "missing ExtendedKeyUsage extension"
+    if ExtendedKeyUsageOID.SERVER_AUTH not in eku:
+        return "missing serverAuth extended key usage"
+
+    try:
         san_ext = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
     except x509.ExtensionNotFound:
         return "missing SAN extension"
@@ -224,12 +231,20 @@ def print_trust_instructions(cert_path: Path, host: str, port: int) -> None:
     msg = f"""
 ================================================================================
 mindthegap is serving HTTPS at {base}
-Self-signed certificate: {cert}
+Self-signed TLS server certificate: {cert}
+
+Trust this exact file. If you had previously trusted an older cert, overwrite
+the existing trust-store entry with this file and refresh the client / OS trust.
+
+If you want a stable, non-regenerating cert path for global trust or manual
+certificate management, set both `tls.cert_file` and `tls.key_file` in
+`config.json`. When both are set, mindthegap will use those files as-is and
+will not auto-regenerate them.
 
 To trust this certificate so clients (Copilot CLI, curl, browsers) accept it:
 
   Linux (system-wide CA bundle, used by curl/python/etc.):
-    sudo cp "{cert}" /usr/local/share/ca-certificates/mindthegap.crt
+    sudo install -m 0644 "{cert}" /usr/local/share/ca-certificates/mindthegap.crt
     sudo update-ca-certificates
 
   Linux (current user, NSS DB used by Firefox / Chrome):
@@ -248,24 +263,16 @@ To trust this certificate so clients (Copilot CLI, curl, browsers) accept it:
     Import-Certificate -FilePath "{cert}" `
       -CertStoreLocation Cert:\\LocalMachine\\Root
 
-  Windows (current user, no admin needed):
-    Import-Certificate -FilePath "{cert}" `
-      -CertStoreLocation Cert:\\CurrentUser\\Root
+ Windows (current user, no admin needed):
+   Import-Certificate -FilePath "{cert}" `
+     -CertStoreLocation Cert:\\CurrentUser\\Root
 
-Some tools ignore the OS trust store and read CA bundles from env vars.
-For Copilot CLI (Node-based) and many SDKs, set:
+ Copilot CLI (same shell that launches `copilot`):
+   export NODE_EXTRA_CA_CERTS="{cert}"
 
-  Linux/macOS:
-    export NODE_EXTRA_CA_CERTS="{cert}"
-    export SSL_CERT_FILE="{cert}"
-    export REQUESTS_CA_BUNDLE="{cert}"
-
-  Windows (PowerShell):
-    $env:NODE_EXTRA_CA_CERTS = "{cert}"
-    $env:SSL_CERT_FILE       = "{cert}"
-    $env:REQUESTS_CA_BUNDLE  = "{cert}"
-
-Then restart the client so it picks up the new env / trust store.
+ Do NOT set SSL_CERT_FILE or REQUESTS_CA_BUNDLE to "{cert}" alone in the
+ proxy shell. That replaces the public CA roots and breaks outbound TLS to
+ DeepSeek. For Python clients, use a combined CA bundle instead (see docs).
 ================================================================================
 """
     print(msg, file=sys.stderr, flush=True)
@@ -282,7 +289,9 @@ def print_cert_reused(cert_path: Path, host: str, port: int) -> None:
     cert = str(cert_path.resolve())
     msg = (
         f"mindthegap: HTTPS at https://{host}:{port} (reusing cert at {cert}). "
-        f"If clients complain about TLS, re-run the trust steps from the README "
-        f"or delete the cert to regenerate and re-print full instructions."
+        f"If clients complain about TLS, re-trust this exact file; if it is an "
+        f"older auto-generated CA-style cert, delete it to regenerate a new "
+        f"leaf/server cert and re-print the full instructions. For a stable "
+        f"non-regenerating cert, set tls.cert_file and tls.key_file."
     )
     print(msg, file=sys.stderr, flush=True)

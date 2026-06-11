@@ -17,10 +17,26 @@ variable or the `--config` CLI flag.
 | `request_timeout_s` | `600` | Upstream HTTP timeout in seconds |
 | `log_level` | `INFO` | Standard Python log level |
 | `tls.cert_dir` | `null` | Directory for auto-generated cert/key. `null` means the OS user-config dir. |
-| `tls.cert_file` / `tls.key_file` | `null` | Explicit cert/key paths. When both are set, no auto-generation occurs. |
-| `tls.san_dns` / `tls.san_ip` | `null` | Override SAN entries. `null` means auto-detect localhost, hostname, FQDN, `127.0.0.1`, and `::1`. |
+| `tls.cert_file` / `tls.key_file` | `null` | Explicit cert/key paths. When both are set, no auto-generation occurs. Recommended when the cert is trusted globally and must stay stable across restarts. |
+| `tls.san_dns` / `tls.san_ip` | `null` | Override SAN entries. `null` means stable localhost defaults: `localhost`, `127.0.0.1`, and `::1`. |
 | `tls.validity_days` | `3650` | Certificate lifetime when generated |
 | `tls.renew_within_days` | `30` | Regenerate when expiry is closer than this |
+
+## Recommended stable TLS config
+
+If you want to trust the proxy cert globally and avoid later regeneration
+surprises, pin the cert/key paths explicitly:
+
+```json
+{
+  "tls": {
+    "cert_file": "/home/you/.config/mindthegap/cert.pem",
+    "key_file": "/home/you/.config/mindthegap/key.pem"
+  }
+}
+```
+
+That disables auto-generation entirely for those files.
 
 ## CLI overrides
 

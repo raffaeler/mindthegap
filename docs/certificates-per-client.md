@@ -6,7 +6,8 @@ keep using the default system/public CA roots.
 ## Certificate installation
 
 No global installation is required. Reuse the generated `cert.pem` directly
-from the `mindthegap` config directory.
+from the `mindthegap` config directory. The generated cert must be a TLS server
+certificate (`CA:FALSE`); newer Copilot CLI builds reject CA-style server certs.
 
 ## Proxy terminal
 

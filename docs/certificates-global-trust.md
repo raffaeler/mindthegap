@@ -3,14 +3,33 @@
 Use this when both the proxy and local clients should keep using the normal
 system trust store, with no special CA environment variables.
 
+For the least surprising long-term behavior, also pin the cert/key paths in
+`config.json` so later proxy restarts do not auto-regenerate a different cert
+and invalidate the trusted copy:
+
+```json
+{
+  "tls": {
+    "cert_file": "/home/you/.config/mindthegap/cert.pem",
+    "key_file": "/home/you/.config/mindthegap/key.pem"
+  }
+}
+```
+
+This is especially important if you replace `cert.pem` manually or distribute
+it to other trust stores.
+
 ## Certificate installation
 
 Linux (Debian/Ubuntu):
 
 ```bash
-sudo cp ~/.config/mindthegap/cert.pem /usr/local/share/ca-certificates/mindthegap.crt
+sudo install -m 0644 ~/.config/mindthegap/cert.pem /usr/local/share/ca-certificates/mindthegap.crt
 sudo update-ca-certificates
 ```
+
+If `mindthegap` regenerates `cert.pem` later, rerun both commands so the OS
+trust store is updated to the current exact certificate.
 
 Linux (Fedora/RHEL): copy `cert.pem` to
 `/etc/pki/ca-trust/source/anchors/` and then run:

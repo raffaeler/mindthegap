@@ -1,11 +1,16 @@
+import datetime as dt
+import ipaddress
 import os
 from pathlib import Path
 
 import pytest
 from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 from mindthegap.config import Settings, TlsConfig
-from mindthegap.tls import ensure_cert, generate_self_signed
+from mindthegap.tls import CERT_FILENAME, KEY_FILENAME, ensure_cert, generate_self_signed
 
 
 def _load_cert(path: Path) -> x509.Certificate:
@@ -22,6 +27,59 @@ def _san_ip(cert: x509.Certificate) -> list[str]:
     return [str(ip) for ip in ext.get_values_for_type(x509.IPAddress)]
 
 
+def _write_legacy_ca_style_cert(cert_path: Path, key_path: Path) -> None:
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    public_key = key.public_key()
+    subject = issuer = x509.Name(
+        [
+            x509.NameAttribute(NameOID.COMMON_NAME, "mindthegap local proxy"),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "mindthegap"),
+        ]
+    )
+    now = dt.datetime.now(dt.UTC)
+    san = x509.SubjectAlternativeName(
+        [
+            x509.DNSName("localhost"),
+            x509.IPAddress(ipaddress.ip_address("127.0.0.1")),
+        ]
+    )
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(public_key)
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - dt.timedelta(minutes=5))
+        .not_valid_after(now + dt.timedelta(days=3650))
+        .add_extension(san, critical=False)
+        .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=True,
+                content_commitment=False,
+                key_encipherment=True,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=True,
+                crl_sign=False,
+                encipher_only=False,
+                decipher_only=False,
+            ),
+            critical=True,
+        )
+        .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
+        .sign(private_key=key, algorithm=hashes.SHA256())
+    )
+    cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    key_path.write_bytes(
+        key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.TraditionalOpenSSL,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+    )
+
+
 def test_generate_self_signed_writes_cert_with_required_sans(tmp_path: Path):
     tls = TlsConfig(san_dns=["localhost", "myhost"], san_ip=["127.0.0.1", "::1"])
     cert_path = tmp_path / "c.pem"
@@ -34,16 +92,23 @@ def test_generate_self_signed_writes_cert_with_required_sans(tmp_path: Path):
     assert set(_san_ip(cert)) == {"127.0.0.1", "::1"}
 
     bc = cert.extensions.get_extension_for_class(x509.BasicConstraints).value
-    assert bc.ca is True
+    assert bc.ca is False
     eku = cert.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value
-    from cryptography.x509.oid import ExtendedKeyUsageOID
-
     assert ExtendedKeyUsageOID.SERVER_AUTH in list(eku)
 
     # not_valid_after in the future
-    import datetime as dt
-
     assert cert.not_valid_after_utc > dt.datetime.now(dt.UTC)
+
+
+def test_generate_self_signed_default_sans_are_localhost_only(tmp_path: Path):
+    tls = TlsConfig()
+    cert_path = tmp_path / "c.pem"
+    key_path = tmp_path / "k.pem"
+    generate_self_signed(tls, cert_path, key_path)
+
+    cert = _load_cert(cert_path)
+    assert _san_dns(cert) == ["localhost"]
+    assert set(_san_ip(cert)) == {"127.0.0.1", "::1"}
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX-only file mode check")
@@ -105,6 +170,21 @@ def test_ensure_cert_regenerates_when_near_expiry(tmp_path: Path):
     cert_path2, _, gen2 = ensure_cert(s)
     assert gen2 is True
     assert _load_cert(cert_path2).serial_number != first_serial
+
+
+def test_ensure_cert_regenerates_legacy_ca_style_cert(tmp_path: Path):
+    s = _settings_with_dir(tmp_path, san_dns=["localhost"], san_ip=["127.0.0.1"])
+    cert_path = tmp_path / CERT_FILENAME
+    key_path = tmp_path / KEY_FILENAME
+    _write_legacy_ca_style_cert(cert_path, key_path)
+    first_serial = _load_cert(cert_path).serial_number
+
+    cert_path2, _, generated = ensure_cert(s)
+    assert generated is True
+    cert = _load_cert(cert_path2)
+    assert cert.serial_number != first_serial
+    bc = cert.extensions.get_extension_for_class(x509.BasicConstraints).value
+    assert bc.ca is False
 
 
 def test_ensure_cert_explicit_paths_must_exist(tmp_path: Path):

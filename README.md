@@ -110,9 +110,10 @@ curl.exe --cacert "$env:APPDATA\mindthegap\cert.pem" https://127.0.0.1:3333/heal
 ## HTTPS/TLS certificate
 
 A local certificate is necessary for HTTPS channel between the client (e.g. GitHub Copilot CLI) and the proxy. This project can:
-- auto-generate a self-signed cert/key pair on first run, or use user-provided ones
-- optionally include custom SAN entries (e.g. `localhost`, `127.0.0.x`, machine hostname) to avoid client validation issues
+- auto-generate a self-signed **leaf/server** cert/key pair on first run, or use user-provided ones
+- defaults to stable localhost-only SANs (`localhost`, `127.0.0.1`, `::1`) and lets you opt into additional SAN entries (for example a machine hostname) when needed
 - automatically renew the cert when it's close to expiry
+- automatically replace older incompatible auto-generated certs (for example CA-style certs rejected by newer Copilot CLI builds)
 
 Depending on your security preferences, platform capabilities and the client software, you can choose one of several trust setup methods to make your clients trust the proxy's certificate:
 
@@ -132,3 +133,65 @@ Depending on your security preferences, platform capabilities and the client sof
 ## License
 
 MIT.
+
+## Quick Start
+
+Use this setup if you want `mindthegap` and a local client such as Copilot CLI
+to work over HTTPS without certificate surprises.
+
+1. Keep the proxy on `127.0.0.1` / `localhost`. Do not use your machine
+   hostname unless you explicitly configure extra SANs.
+2. Start the proxy once so it creates `~/.config/mindthegap/cert.pem`:
+
+   ```bash
+   uv run mindthegap --config ./config.json
+   ```
+
+3. Trust that exact cert globally:
+
+   ```bash
+   sudo install -m 0644 ~/.config/mindthegap/cert.pem /usr/local/share/ca-certificates/mindthegap.crt
+   sudo update-ca-certificates
+   ```
+
+4. Run the proxy in a clean shell:
+
+   ```bash
+   unset SSL_CERT_FILE REQUESTS_CA_BUNDLE NODE_EXTRA_CA_CERTS
+   uv run mindthegap --config ./config.json
+   ```
+
+5. Point the client at `https://127.0.0.1:3333/v1`. For Copilot CLI:
+
+   ```bash
+   export COPILOT_PROVIDER_BASE_URL="https://127.0.0.1:3333/v1"
+   export COPILOT_PROVIDER_API_KEY="sk-...your-deepseek-key..."
+   export COPILOT_PROVIDER_TYPE="openai"
+   export COPILOT_PROVIDER_WIRE_API="completions"
+   export COPILOT_MODEL="deepseek-v4-pro"
+   copilot
+   ```
+
+Rules that avoid most TLS pain:
+
+- Never set `SSL_CERT_FILE` or `REQUESTS_CA_BUNDLE` to `cert.pem` alone in the
+  proxy shell.
+- Always connect to `127.0.0.1` or `localhost` unless you configured extra
+  SANs.
+- If `cert.pem` is ever regenerated, reinstall that exact file into the OS
+  trust store.
+
+If you want the certificate pair to be fully pinned and never auto-managed, set
+both `tls.cert_file` and `tls.key_file` in `config.json`:
+
+```json
+{
+  "tls": {
+    "cert_file": "/home/you/.config/mindthegap/cert.pem",
+    "key_file": "/home/you/.config/mindthegap/key.pem"
+  }
+}
+```
+
+When both are set, `mindthegap` uses those files as-is and does not
+auto-generate them.
