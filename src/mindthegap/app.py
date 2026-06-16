@@ -16,6 +16,7 @@ from .cache import ReasoningCache
 from .config import Settings, load_settings
 from .streaming import stitch_sse
 from .transforms import transform_request_body, transform_response_body
+from .upstream import resolve_upstream
 
 logger = logging.getLogger("mindthegap")
 
@@ -134,6 +135,191 @@ def _filter_headers(headers: Mapping[str, str] | Iterable[tuple[str, str]]) -> d
     return {k: v for k, v in items if k.lower() not in _HOP_BY_HOP}
 
 
+def _build_upstream_request(
+    cfg: Settings,
+    path: str,
+    body_bytes: bytes,
+    request_headers: Mapping[str, str],
+) -> tuple[str, dict[str, str]]:
+    """Resolve the upstream and return (upstream_url, amended_headers).
+
+    When multi-upstream mode is active the upstream is selected via the
+    configured routing rules (header → path prefix → model → default).
+    Per-upstream API keys are injected when the client didn't supply one.
+    Falls back to the legacy ``upstream_base_url`` for zero-config usage.
+    """
+    headers = _filter_headers(request_headers)
+    headers["content-type"] = "application/json"
+
+    if cfg.has_multi_upstream:
+        resolved = resolve_upstream(
+            cfg, path, body_bytes, request_headers=headers
+        )
+        if resolved is None:
+            raise _NoUpstreamError("no upstream matches the request")
+
+        base = resolved.options.base_url.rstrip("/")
+        prefix = resolved.options.path_prefix or ""
+        prefix = prefix.rstrip("/")
+        rewritten = resolved.path if resolved.path.startswith("/") else f"/{resolved.path}"
+        upstream_url = f"{base}{prefix}{rewritten}"
+
+        # Inject per-upstream API key when the client didn't provide auth
+        api_key = resolved.options.api_key
+        if api_key:
+            key_header = resolved.options.api_key_header.lower()
+            if key_header not in {k.lower() for k in headers}:
+                value = f"Bearer {api_key}" if resolved.options.api_key_as_bearer else api_key
+                headers[resolved.options.api_key_header] = value
+
+        return upstream_url, headers
+
+    # Legacy single-upstream mode
+    base = cfg.upstream_base_url.rstrip("/")
+    suffix = path if path.startswith("/") else f"/{path}"
+    prefix = cfg.upstream_path_prefix.rstrip("/")
+    if prefix and suffix != prefix and not suffix.startswith(prefix + "/"):
+        suffix = prefix + suffix
+    return f"{base}{suffix}", headers
+
+
+class _NoUpstreamError(Exception):
+    """Raised when no upstream can be resolved for a request."""
+    pass
+
+
+async def _chat_completions_handler(
+    cfg: Settings,
+    cache: ReasoningCache,
+    request: Request,
+    upstream_path: str,
+) -> Response:
+    """Shared handler for /v1/chat/completions and /chat/completions routes."""
+    client: httpx.AsyncClient = request.app.state.client
+    raw = await request.body()
+    try:
+        body: Any = json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
+
+    new_body = transform_request_body(body, cfg, cache=cache)
+    is_stream = bool(new_body.get("stream"))
+
+    payload = json.dumps(new_body).encode("utf-8")
+    try:
+        upstream_url, headers = _build_upstream_request(
+            cfg, upstream_path, raw, request.headers
+        )
+    except _NoUpstreamError:
+        return JSONResponse(
+            {"error": "no upstream matches the request"}, status_code=400
+        )
+
+    if is_stream:
+        req = client.build_request("POST", upstream_url, headers=headers, content=payload)
+        upstream_resp = await client.send(req, stream=True)
+        if upstream_resp.status_code >= 400:
+            err_body = await upstream_resp.aread()
+            await upstream_resp.aclose()
+            _log_upstream_error(
+                "POST",
+                upstream_url,
+                upstream_resp.status_code,
+                headers,
+                payload,
+                err_body,
+            )
+            return Response(
+                content=err_body,
+                status_code=upstream_resp.status_code,
+                headers=_filter_headers(upstream_resp.headers),
+            )
+
+        async def body_iter() -> AsyncIterator[bytes]:
+            try:
+                async for out in stitch_sse(upstream_resp.aiter_bytes(), cfg, cache=cache):
+                    yield out
+            finally:
+                await upstream_resp.aclose()
+
+        resp_headers = _filter_headers(upstream_resp.headers)
+        return StreamingResponse(
+            body_iter(),
+            status_code=upstream_resp.status_code,
+            headers=resp_headers,
+            media_type=upstream_resp.headers.get("content-type", "text/event-stream"),
+        )
+
+    upstream_resp = await client.post(upstream_url, headers=headers, content=payload)
+    resp_headers = _filter_headers(upstream_resp.headers)
+    if upstream_resp.status_code >= 400:
+        _log_upstream_error(
+            "POST",
+            upstream_url,
+            upstream_resp.status_code,
+            headers,
+            payload,
+            upstream_resp.content,
+        )
+        return Response(
+            content=upstream_resp.content,
+            status_code=upstream_resp.status_code,
+            headers=resp_headers,
+        )
+    try:
+        data = upstream_resp.json()
+    except json.JSONDecodeError:
+        return Response(
+            content=upstream_resp.content,
+            status_code=upstream_resp.status_code,
+            headers=resp_headers,
+        )
+    if isinstance(data, dict):
+        data = transform_response_body(data, cfg, cache=cache)
+    return JSONResponse(data, status_code=upstream_resp.status_code)
+
+
+async def _passthrough_handler(
+    cfg: Settings,
+    request: Request,
+    upstream_path: str,
+) -> Response:
+    """Shared handler for /v1/{path}, /{path}, and prefix-routing catch-all."""
+    client: httpx.AsyncClient = request.app.state.client
+    body = await request.body()
+    try:
+        upstream_url, headers = _build_upstream_request(
+            cfg, upstream_path, body, request.headers
+        )
+    except _NoUpstreamError:
+        return JSONResponse(
+            {"error": "no upstream matches the request"}, status_code=400
+        )
+    upstream_resp = await client.request(
+        request.method,
+        upstream_url,
+        headers=headers,
+        params=dict(request.query_params),
+        content=body if body else None,
+    )
+    if upstream_resp.status_code >= 400:
+        _log_upstream_error(
+            request.method,
+            upstream_url,
+            upstream_resp.status_code,
+            headers,
+            body,
+            upstream_resp.content,
+        )
+    return Response(
+        content=upstream_resp.content,
+        status_code=upstream_resp.status_code,
+        headers=_filter_headers(upstream_resp.headers),
+    )
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     cfg = settings or load_settings()
     logging.basicConfig(level=cfg.log_level.upper())
@@ -156,115 +342,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/v1/chat/completions")
     async def chat_completions(request: Request) -> Response:
-        client: httpx.AsyncClient = request.app.state.client
-        raw = await request.body()
-        try:
-            body: Any = json.loads(raw) if raw else {}
-        except json.JSONDecodeError:
-            return JSONResponse({"error": "invalid JSON body"}, status_code=400)
-        if not isinstance(body, dict):
-            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
+        return await _chat_completions_handler(
+            cfg, cache, request, "/v1/chat/completions"
+        )
 
-        new_body = transform_request_body(body, cfg, cache=cache)
-        is_stream = bool(new_body.get("stream"))
-
-        upstream_url = cfg.upstream("/v1/chat/completions")
-        headers = _filter_headers(request.headers)
-        headers["content-type"] = "application/json"
-        payload = json.dumps(new_body).encode("utf-8")
-
-        if is_stream:
-            req = client.build_request("POST", upstream_url, headers=headers, content=payload)
-            upstream_resp = await client.send(req, stream=True)
-            if upstream_resp.status_code >= 400:
-                err_body = await upstream_resp.aread()
-                await upstream_resp.aclose()
-                _log_upstream_error(
-                    "POST",
-                    upstream_url,
-                    upstream_resp.status_code,
-                    headers,
-                    payload,
-                    err_body,
-                )
-                return Response(
-                    content=err_body,
-                    status_code=upstream_resp.status_code,
-                    headers=_filter_headers(upstream_resp.headers),
-                )
-
-            async def body_iter() -> AsyncIterator[bytes]:
-                try:
-                    async for out in stitch_sse(upstream_resp.aiter_bytes(), cfg, cache=cache):
-                        yield out
-                finally:
-                    await upstream_resp.aclose()
-
-            resp_headers = _filter_headers(upstream_resp.headers)
-            return StreamingResponse(
-                body_iter(),
-                status_code=upstream_resp.status_code,
-                headers=resp_headers,
-                media_type=upstream_resp.headers.get("content-type", "text/event-stream"),
-            )
-
-        upstream_resp = await client.post(upstream_url, headers=headers, content=payload)
-        resp_headers = _filter_headers(upstream_resp.headers)
-        if upstream_resp.status_code >= 400:
-            _log_upstream_error(
-                "POST",
-                upstream_url,
-                upstream_resp.status_code,
-                headers,
-                payload,
-                upstream_resp.content,
-            )
-            return Response(
-                content=upstream_resp.content,
-                status_code=upstream_resp.status_code,
-                headers=resp_headers,
-            )
-        try:
-            data = upstream_resp.json()
-        except json.JSONDecodeError:
-            return Response(
-                content=upstream_resp.content,
-                status_code=upstream_resp.status_code,
-                headers=resp_headers,
-            )
-        if isinstance(data, dict):
-            data = transform_response_body(data, cfg, cache=cache)
-        return JSONResponse(data, status_code=upstream_resp.status_code)
+    @app.post("/chat/completions")
+    async def chat_completions_no_prefix(request: Request) -> Response:
+        return await _chat_completions_handler(
+            cfg, cache, request, "/chat/completions"
+        )
 
     @app.api_route(
         "/v1/{path:path}",
         methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"],
     )
     async def passthrough(path: str, request: Request) -> Response:
-        client: httpx.AsyncClient = request.app.state.client
-        upstream_url = cfg.upstream(f"/v1/{path}")
-        headers = _filter_headers(request.headers)
-        body = await request.body()
-        upstream_resp = await client.request(
-            request.method,
-            upstream_url,
-            headers=headers,
-            params=dict(request.query_params),
-            content=body if body else None,
-        )
-        if upstream_resp.status_code >= 400:
-            _log_upstream_error(
-                request.method,
-                upstream_url,
-                upstream_resp.status_code,
-                headers,
-                body,
-                upstream_resp.content,
-            )
-        return Response(
-            content=upstream_resp.content,
-            status_code=upstream_resp.status_code,
-            headers=_filter_headers(upstream_resp.headers),
-        )
+        return await _passthrough_handler(cfg, request, f"/v1/{path}")
+
+    @app.api_route(
+        "/{path:path}",
+        methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"],
+    )
+    async def catch_all(path: str, request: Request) -> Response:
+        """Catch-all route: handles multi-upstream path-prefix routing
+        (e.g. /deepseek/v1/...) and non-prefixed passthrough (e.g. /models).
+        """
+        return await _passthrough_handler(cfg, request, f"/{path}")
 
     return app

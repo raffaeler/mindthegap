@@ -194,3 +194,199 @@ async def test_stream_handles_reasoning_split_across_chunks_with_trailing_newlin
     # line so Markdown renderers don't fold the next content onto the tag.
     assert "[[/think]]\n\nanswer" in joined
     assert "\n\n\n[[/think]]" not in joined
+
+
+# ── New tests: DSML tag sanitisation and fragment buffering ──────────────
+
+
+@pytest.mark.asyncio
+async def test_stream_strips_dsml_tags_from_reasoning():
+    """DSML tags in reasoning content should be stripped before wrapping."""
+    settings = Settings()
+    chunks = [
+        _sse(
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "reasoning_content": "Hello <\uff5cDSML\uff5ctool_calls> world"
+                        },
+                    }
+                ]
+            }
+        ),
+        _sse(
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": "Done", "finish_reason": "stop"},
+                    }
+                ]
+            }
+        ),
+        b"data: [DONE]\n\n",
+    ]
+    out = (await _collect(stitch_sse(_aiter(chunks), settings))).decode()
+    assert "DSML" not in out
+    assert "[[think]]" in out
+    assert "Hello world" in out  # whitespace collapsed to single space
+
+
+@pytest.mark.asyncio
+async def test_stream_strips_xml_tags_from_reasoning():
+    """XML-like tags (</parameter>, <analysis>) should be stripped."""
+    settings = Settings()
+    chunks = [
+        _sse(
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "reasoning_content": "Before </parameter> after"
+                        },
+                    }
+                ]
+            }
+        ),
+        _sse(
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": "result", "finish_reason": "stop"},
+                    }
+                ]
+            }
+        ),
+        b"data: [DONE]\n\n",
+    ]
+    out = (await _collect(stitch_sse(_aiter(chunks), settings))).decode()
+    assert "</parameter>" not in out
+    assert "Before after" in out  # whitespace collapsed
+
+
+@pytest.mark.asyncio
+async def test_stream_buffers_split_fragment_across_deltas():
+    """A tag like </parameter> split across SSE deltas should be buffered and
+    never emitted as a partial fragment."""
+    settings = Settings()
+    chunks = [
+        _sse(
+            {
+                "choices": [
+                    {"index": 0, "delta": {"reasoning_content": "think</"}}
+                ]
+            }
+        ),
+        _sse(
+            {
+                "choices": [
+                    {"index": 0, "delta": {"reasoning_content": "parameter>"}}
+                ]
+            }
+        ),
+        _sse(
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": "answer", "finish_reason": "stop"},
+                    }
+                ]
+            }
+        ),
+        b"data: [DONE]\n\n",
+    ]
+    out = (await _collect(stitch_sse(_aiter(chunks), settings))).decode()
+    # The combined fragment should be stripped, not emitted raw
+    assert "</parameter>" not in out
+    assert "think" in out
+    # The fragment was not emitted in intermediate deltas
+    for line in out.splitlines():
+        if line.startswith("data:") and line[6:] not in ("", "[DONE]"):
+            try:
+                p = json.loads(line[6:])
+                delta_content = (
+                    p.get("choices", [{}])[0]
+                    .get("delta", {})
+                    .get("content", "")
+                )
+                if isinstance(delta_content, str) and "parameter" in delta_content:
+                    assert "</parameter" not in delta_content  # never partial
+                    if ">" in delta_content:
+                        assert delta_content.count(">") >= 1  # complete only
+            except json.JSONDecodeError:
+                pass
+
+
+@pytest.mark.asyncio
+async def test_stream_flushes_pending_on_content_arrival():
+    """When reasoning has pending buffered fragments and content arrives,
+    the pending text should be flushed with the content delta."""
+    settings = Settings()
+    chunks = [
+        _sse(
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"reasoning_content": "start </parameter"},
+                    }
+                ]
+            }
+        ),
+        # No more reasoning — next delta is content
+        _sse(
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": "the answer", "finish_reason": "stop"},
+                    }
+                ]
+            }
+        ),
+        b"data: [DONE]\n\n",
+    ]
+    out = (await _collect(stitch_sse(_aiter(chunks), settings))).decode()
+    assert "[[think]]" in out
+    assert "[[/think]]" in out
+    assert "the answer" in out
+    # The </parameter> tag should be stripped from output
+    assert "</parameter" not in out
+
+
+@pytest.mark.asyncio
+async def test_stream_flushes_pending_on_finish_reason():
+    """When reasoning has pending fragments and finish_reason arrives with no
+    content, the pending text should still be flushed."""
+    settings = Settings()
+    chunks = [
+        _sse(
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"reasoning_content": "only </param"},
+                    }
+                ]
+            }
+        ),
+        _sse(
+            {
+                "choices": [
+                    {"index": 0, "delta": {}, "finish_reason": "stop"},
+                ]
+            }
+        ),
+        b"data: [DONE]\n\n",
+    ]
+    out = (await _collect(stitch_sse(_aiter(chunks), settings))).decode()
+    assert "[[think]]" in out
+    assert "[[/think]]" in out
+    assert "</param" not in out
+    # "only" should appear, the incomplete " </param" suffix stripped
+    assert "only" in out

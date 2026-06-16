@@ -1,14 +1,60 @@
 {
+  "//": "Multi-upstream mode — define named upstreams the proxy can route to.",
+  "//": "When 'upstreams' is non-empty, 'upstream_base_url' is ignored.",
+  "upstreams": {
+    "deepseek": {
+      "base_url": "https://api.deepseek.com",
+      "path_prefix": "/v1",
+      "api_key": null,
+      "api_key_header": "Authorization",
+      "api_key_as_bearer": true
+    },
+    "openai": {
+      "base_url": "https://api.openai.com",
+      "path_prefix": "/v1",
+      "api_key": null,
+      "api_key_header": "Authorization",
+      "api_key_as_bearer": true
+    }
+  },
+
+  "//": "Rules controlling how the upstream for each request is chosen.",
+  "upstream_selection": {
+    "header_name": "X-Mindthegap-Upstream",
+    "path_prefix_enabled": true,
+    "model_mapping": {
+      "deepseek-*": "deepseek",
+      "[X]gpt-*": "openai"
+    },
+    "model_mapping_max_body_bytes": 262144
+  },
+
+  "//": "Default upstream used when the client does not select one explicitly.",
+  "//": "Can also be set via CLI: --upstream=deepseek or --upstream:deepseek",
+  "default_upstream": "deepseek",
+
+  "//": "Legacy single-upstream mode — used when 'upstreams' above is empty.",
   "upstream_base_url": "https://api.deepseek.com",
+
   "host": "127.0.0.1",
-  "port": 3333,
+  "httpsPort": 3333,
+  "httpPort": 3300,
   "think_tag_open": "[[think]]",
   "think_tag_close": "[[/think]]",
   "reasoner_models": ["deepseek-reasoner", "deepseek-v4-pro"],
   "unstitch_when_not_reasoner": "drop",
+
+  "//": "Model-specific parameter overrides applied to chat completions requests.",
+  "//": "Glob patterns (with *) are supported. Exact matches take priority.",
+  "//": "Only temperature and top_p are shown here; any sampling param can be set.",
+  "model_params": {
+    "deepseek-reasoner": {"temperature": 0.0, "top_p": 1.0},
+    "deepseek-chat": {"temperature": 0.7, "top_p": 0.9}
+  },
   "request_timeout_s": 600,
   "log_level": "INFO",
   "tls": {
+    "enabled": true,
     "cert_dir": null,
     "cert_file": null,
     "key_file": null,

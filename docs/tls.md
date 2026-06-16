@@ -1,7 +1,11 @@
 # TLS / self-signed certificate
 
-`mindthegap` always serves HTTPS. On first launch the proxy generates its own
+`mindthegap` serves HTTPS by default. On first launch the proxy generates its own
 self-signed leaf/server certificate and reuses it on subsequent launches.
+
+To serve plain HTTP instead (e.g. for local development behind a reverse proxy
+that handles TLS), set `tls.enabled` to `false` in `config.json` or pass
+`--no-tls` on the command line.
 
 Certificate location:
 

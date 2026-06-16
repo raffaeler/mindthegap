@@ -17,6 +17,21 @@ from typing import Any
 
 from .cache import ReasoningCache
 from .config import Settings
+from .sanitize import has_incomplete_fragment, sanitize_reasoning_text
+
+
+def _strip_incomplete_fragment(text: str) -> str:
+    """When *text* ends with an incomplete XML-like fragment (``<`` without
+    ``>``), strip everything from the last ``<`` to the end.  Returns the
+    cleaned text (may be empty)."""
+    stripped = text.strip()
+    if not has_incomplete_fragment(stripped):
+        return text
+    # Find the last '<' and drop it and everything after.
+    last_lt = text.rfind("<")
+    if last_lt >= 0:
+        return text[:last_lt].rstrip()
+    return text
 
 
 @dataclass
@@ -40,6 +55,11 @@ class _ChoiceState:
     # Set once we've persisted reasoning into the cache for this choice
     # so we don't store the same text under the same ids more than once.
     cache_flushed: bool = False
+    # Buffered reasoning text that appears to contain an incomplete XML/DSML
+    # fragment (contains ``<`` but no ``>``).  The text is held here until the
+    # next delta completes the tag or a flush event (content / finish_reason)
+    # arrives.  Ported from llmhub's ``ChoiceStitchState.PendingReasoningText``.
+    pending_reasoning_text: str = ""
 
 
 @dataclass
@@ -52,6 +72,23 @@ class _StreamState:
             st = _ChoiceState()
             self.per_choice[idx] = st
         return st
+
+
+# ── surrogate pair protection ─────────────────────────────────────────────
+# CESU-8 encodes U+D800..U+DBFF as ED A0-BF 80-BF.  Splitting such a
+# 3-byte sequence across two SSE output chunks would leave the downstream
+# JSON parser with a lone/invalid surrogate.  We detect the incomplete
+# prefix and buffer it for the next chunk.
+_HIGH_SURROGATE_PREFIX = bytes([0xED, 0xA0])  # first two bytes of U+D800
+_HIGH_SURROGATE_MAX_B2 = 0xBF
+
+
+def _ends_with_high_surrogate_start(b: bytes) -> bool:
+    """Return True when *b* ends with the first 2 bytes of a CESU-8
+    high-surrogate encoding (0xED 0xA0–0xBF) without its third byte."""
+    if len(b) < 2:
+        return False
+    return b[-2] == _HIGH_SURROGATE_PREFIX[0] and _HIGH_SURROGATE_PREFIX[1] <= b[-1] <= _HIGH_SURROGATE_MAX_B2
 
 
 def _count_trailing_newlines(s: str) -> int:
@@ -136,33 +173,123 @@ def _rewrite_choice(
 
     pieces: list[str] = []
     if isinstance(reasoning, str) and reasoning:
-        st.reasoning_buffer.append(reasoning)
-        if not st.opened:
-            # Two trailing spaces before the newline = Markdown hard line break,
-            # so plain-text tags like ``[[think]]`` render on their own line
-            # instead of being flowed inline with the reasoning text.
-            pieces.append(f"{settings.think_tag_open}  \n")
-            st.opened = True
-            st.trailing_newlines = 1
-        pieces.append(reasoning)
-        # Update trailing-newline tally based on the new piece.
-        if reasoning.strip("\n") == "":
-            st.trailing_newlines += len(reasoning)
+        # Combine with any buffered pending fragment from a prior delta
+        combined = st.pending_reasoning_text + reasoning
+        sanitized = sanitize_reasoning_text(combined)
+        incomplete = has_incomplete_fragment(combined)
+
+        has_real_content = isinstance(content, str) and content != ""
+        finish_reason = new_choice.get("finish_reason")
+        has_finish = finish_reason is not None
+
+        if has_real_content or has_finish:
+            # Content or finish_reason arrived — flush everything now.
+            if combined:
+                st.reasoning_buffer.append(combined)
+            if not st.opened and sanitized:
+                pieces.append(f"{settings.think_tag_open}  \n")
+                st.opened = True
+                st.trailing_newlines = 1
+            if sanitized:
+                # Avoid prepending a bare newline if the reasoning itself ends
+                # with newlines (keep trailing tally)
+                pieces.append(sanitized)
+                if sanitized.strip("\n") == "":
+                    st.trailing_newlines += len(sanitized)
+                else:
+                    st.trailing_newlines = _count_trailing_newlines(sanitized)
+
+            if has_real_content:
+                pieces.append(
+                    f"{_close_padding(st.trailing_newlines)}{settings.think_tag_close}\n\n"
+                )
+                st.closed = True
+                pieces.append(content)  # type: ignore[arg-type]
+            elif has_finish:
+                pieces.append(
+                    f"{_close_padding(st.trailing_newlines)}{settings.think_tag_close}\n\n"
+                )
+                st.closed = True
+
+            st.pending_reasoning_text = ""
+
+        elif incomplete:
+            # Fragment looks like a split tag — buffer it for the next delta.
+            st.pending_reasoning_text = combined
+            # Remove reasoning_content from this delta so the client doesn't
+            # see a partial, possibly malformed fragment.
+            # (already popped from new_delta above)
+
         else:
-            st.trailing_newlines = _count_trailing_newlines(reasoning)
+            # Pure reasoning delta, no split detected — emit inline.
+            st.reasoning_buffer.append(combined)
+            if not st.opened and sanitized:
+                pieces.append(f"{settings.think_tag_open}  \n")
+                st.opened = True
+                st.trailing_newlines = 1
+            if sanitized:
+                pieces.append(sanitized)
+                if sanitized.strip("\n") == "":
+                    st.trailing_newlines += len(sanitized)
+                else:
+                    st.trailing_newlines = _count_trailing_newlines(sanitized)
+            st.pending_reasoning_text = ""
 
-    has_real_content = isinstance(content, str) and content != ""
-    if has_real_content and st.opened and not st.closed:
-        pieces.append(f"{_close_padding(st.trailing_newlines)}{settings.think_tag_close}\n\n")
-        st.closed = True
+    else:
+        # No reasoning in this delta, but we might have pending fragments.
+        has_real_content = isinstance(content, str) and content != ""
+        finish_reason = new_choice.get("finish_reason")
+        has_finish = finish_reason is not None
 
-    if has_real_content:
-        pieces.append(content)  # type: ignore[arg-type]
+        if has_real_content and st.pending_reasoning_text:
+            # Flush pending reasoning before the real content.
+            pending_sanitized = sanitize_reasoning_text(st.pending_reasoning_text)
+            pending_sanitized = _strip_incomplete_fragment(pending_sanitized)
+            if not st.opened and pending_sanitized:
+                pieces.append(f"{settings.think_tag_open}  \n")
+                st.opened = True
+            if pending_sanitized:
+                pieces.append(pending_sanitized)
+            if st.opened:
+                pieces.append(
+                    f"{_close_padding(st.trailing_newlines)}{settings.think_tag_close}\n\n"
+                )
+                st.closed = True
+            st.pending_reasoning_text = ""
 
-    finish_reason = new_choice.get("finish_reason")
-    if finish_reason and st.opened and not st.closed:
-        pieces.append(f"{_close_padding(st.trailing_newlines)}{settings.think_tag_close}\n\n")
-        st.closed = True
+        if has_real_content and st.opened and not st.closed:
+            pieces.append(f"{_close_padding(st.trailing_newlines)}{settings.think_tag_close}\n\n")
+            st.closed = True
+
+        if has_real_content:
+            pieces.append(content)  # type: ignore[arg-type]
+
+        if finish_reason and st.opened and not st.closed:
+            if st.pending_reasoning_text:
+                pending_sanitized = sanitize_reasoning_text(st.pending_reasoning_text)
+                pending_sanitized = _strip_incomplete_fragment(pending_sanitized)
+                if pending_sanitized:
+                    pieces.append(pending_sanitized)
+                st.pending_reasoning_text = ""
+            pieces.append(f"{_close_padding(st.trailing_newlines)}{settings.think_tag_close}\n\n")
+            st.closed = True
+
+        # Finish with pending but think never opened — still flush.
+        if has_finish and st.pending_reasoning_text:
+            pending_sanitized = sanitize_reasoning_text(st.pending_reasoning_text)
+            pending_sanitized = _strip_incomplete_fragment(pending_sanitized)
+            if not st.opened and pending_sanitized:
+                pieces.append(f"{settings.think_tag_open}  \n")
+                st.opened = True
+                st.trailing_newlines = 1
+            if pending_sanitized:
+                pieces.append(pending_sanitized)
+            if st.opened:
+                pieces.append(
+                    f"{_close_padding(st.trailing_newlines)}{settings.think_tag_close}\n\n"
+                )
+                st.closed = True
+            st.pending_reasoning_text = ""
 
     # Once the choice has reached a terminal state, persist the reasoning
     # under every observed tool_call_id so follow-up turns can recover it.
@@ -204,15 +331,28 @@ async def stitch_sse(
     """Rewrite an upstream SSE byte stream so reasoning becomes inline content."""
     state = _StreamState()
     buffer = b""
+    pending_surrogate = b""  # buffered high-surrogate prefix (CESU-8 edge case)
     async for chunk in upstream:
         buffer += chunk
         while b"\n" in buffer:
             line, buffer = buffer.split(b"\n", 1)
             for out in _process_line(line, state, settings, cache=cache):
-                yield out + b"\n"
+                out_b = pending_surrogate + out
+                if _ends_with_high_surrogate_start(out_b):
+                    pending_surrogate = out_b[-2:]
+                    # Don't yield the partial surrogate tail yet — wait for the
+                    # next output where the third byte of the CESU-8 sequence
+                    # will complete the character.
+                    if len(out_b) > 2:
+                        yield out_b[:-2] + b"\n"
+                else:
+                    pending_surrogate = b""
+                    yield out_b + b"\n"
     if buffer:
         for out in _process_line(buffer, state, settings, cache=cache):
-            yield out
+            out_b = pending_surrogate + out
+            yield out_b + b"\n"
+            pending_surrogate = b""
     # Final safety net: if the upstream ended without ever closing an opened
     # <think> block (truncated stream, missing finish_reason, no [DONE]),
     # emit synthetic close chunks so the assistant message persisted by the
@@ -223,6 +363,10 @@ async def stitch_sse(
             st.closed = True
         # Last-chance flush in case finish_reason was never observed.
         _flush_to_cache(st, cache)
+    # Flush any leftover surrogate prefix — this would only happen if the
+    # upstream stream is truly malformed (lone surrogate at EOF).
+    if pending_surrogate:
+        yield pending_surrogate + b"\n"
 
 
 def _synthetic_close_chunk(idx: int, st: _ChoiceState, settings: Settings) -> bytes:

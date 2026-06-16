@@ -7,6 +7,7 @@ from typing import Any
 
 from .cache import ReasoningCache
 from .config import Settings, UnstitchMode
+from .sanitize import sanitize_reasoning_text
 
 
 def _think_pattern(settings: Settings) -> re.Pattern[str]:
@@ -75,6 +76,9 @@ def stitch_message(
     # (A bare \n would otherwise be collapsed to a space by the client's
     # Markdown renderer and the tag would appear inline with the reasoning.)
     reasoning_body = reasoning.rstrip("\n").rstrip()
+    # Sanitise reasoning text: strip DSML/XML tags and normalise whitespace
+    # before wrapping in think tags.  Ported from llmhub.
+    reasoning_body = sanitize_reasoning_text(reasoning_body)
     wrapped = f"{open_tag}  \n{reasoning_body}  \n{close_tag}\n\n"
     if isinstance(content, str) and content:
         out["content"] = wrapped + content
@@ -185,6 +189,12 @@ def transform_request_body(
     )
     new_body = dict(body)
     new_body["messages"] = unstitch_messages(messages, settings, mode, cache=cache)
+
+    # Apply model-specific parameter overrides (temperature, top_p, etc.)
+    params = settings.get_model_params(model)
+    if params:
+        new_body.update(params)
+
     return new_body
 
 

@@ -166,5 +166,5 @@ bound to the same port.
 Fix:
 
 - stop the existing process, or
-- run the proxy with a different port via `--port` and update the client base
+- run the proxy with a different port via `--https-port` (or `--http-port` when using `--no-tls`) and update the client base
   URL accordingly.

@@ -1,5 +1,10 @@
 # mindthegap
 
+> [!IMPORTANT]
+> Configure your LLM client to point at **`https://localhost:3333`** (without `/v1`).
+> For DeepSeek, also set `"upstream_path_prefix": ""` in `config.json` — see the
+> [configuration guide](docs/configuration.md#quick-start--single-upstream-backward-compatible).
+
 A localhost stitch/unstitch HTTPS proxy that lets minimal OpenAI-compatible
 clients (such as the GitHub Copilot CLI) talk to **DeepSeek reasoning models**
 without losing the `reasoning_content` field across turns.
@@ -74,26 +79,46 @@ Copy-Item config.example.json config.json
 ## Run
 
 ```bash
-uv run mindthegap --config ./config.json
+uv run mindthegap
 # equivalent: uv run python -m mindthegap
 ```
 
-The proxy binds `127.0.0.1:3333` over **HTTPS** by default. Override at the
-command line:
+If no `config.json` exists, mindthegap automatically copies `config.example.json`
+so you can start right away. Edit the generated `config.json` to configure
+upstreams and TLS settings.
+
+The proxy binds `127.0.0.1` over **HTTPS** on port 3333 by default, or plain **HTTP** on port 3300
+when TLS is disabled. Override at the command line:
 
 ```
-uv run mindthegap --host 127.0.0.1 --port 3333 --log-level INFO --cert-dir ./certs
+uv run mindthegap --host 127.0.0.1 --https-port 3333 --log-level INFO --cert-dir ./certs
 ```
 
-You can also point at an alternate config via the `MINDTHEGAP_CONFIG`
-environment variable.
+To serve plain HTTP (e.g. for development behind a reverse proxy):
+
+```
+uv run mindthegap --no-tls
+uv run mindthegap --no-tls --http-port 8080
+```
+
+See all options with `uv run mindthegap --help`. You can also point at an
+alternate config via the `MINDTHEGAP_CONFIG` environment variable.
 
 ## Endpoints
 
 - `POST /v1/chat/completions` — full stitch/unstitch (JSON and SSE).
+- `POST /chat/completions` — same as above, without the `/v1` prefix.
 - `* /v1/{path}` — transparent passthrough for everything else
   (e.g. `GET /v1/models`).
+- `* /{path}` — non-prefixed passthrough (e.g. `GET /models` forwards
+  as `/v1/models` when `upstream_path_prefix` is `"/v1"`).
 - `GET /healthz` — liveness probe, returns `{"ok": true}`.
+
+The proxy accepts both `/v1`-prefixed and unprefixed paths so clients
+can use `https://127.0.0.1:3333` as their base URL (without `/v1`).
+When forwarding to the upstream, a configurable `upstream_path_prefix`
+(default `"/v1"`) is prepended to unprefixed paths. Set it to `""` for
+upstreams that don't use a `/v1` prefix (e.g. DeepSeek).
 
 Quick health check:
 

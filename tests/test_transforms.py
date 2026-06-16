@@ -221,3 +221,83 @@ def test_transform_response_body_stitches_choices():
     msg = out["choices"][0]["message"]
     assert msg["content"] == "[[think]]  \nthoughts  \n[[/think]]\n\nhi"
     assert "reasoning_content" not in msg
+
+
+# ── model_params tests ──────────────────────────────────────────────────────
+
+
+def test_model_params_exact_match_injects_override():
+    body = {
+        "model": "deepseek-chat",
+        "messages": [{"role": "user", "content": "hi"}],
+        "temperature": 1.0,
+        "top_p": 0.5,
+    }
+    s = Settings(model_params={"deepseek-chat": {"temperature": 0.7, "top_p": 0.9}})
+    out = transform_request_body(body, s)
+    assert out["temperature"] == 0.7
+    assert out["top_p"] == 0.9
+    assert out["model"] == "deepseek-chat"
+    assert out["messages"] == [{"role": "user", "content": "hi"}]
+
+
+def test_model_params_glob_match_injects_override():
+    body = {
+        "model": "deepseek-chat",
+        "messages": [{"role": "user", "content": "hi"}],
+        "temperature": 1.0,
+    }
+    s = Settings(model_params={"deepseek-*": {"temperature": 0.3}})
+    out = transform_request_body(body, s)
+    assert out["temperature"] == 0.3
+    assert out["model"] == "deepseek-chat"
+
+
+def test_model_params_exact_wins_over_glob():
+    body = {
+        "model": "deepseek-chat",
+        "messages": [{"role": "user", "content": "hi"}],
+        "temperature": 1.0,
+    }
+    s = Settings(
+        model_params={
+            "deepseek-*": {"temperature": 0.3},
+            "deepseek-chat": {"temperature": 0.7},
+        }
+    )
+    out = transform_request_body(body, s)
+    assert out["temperature"] == 0.7
+
+
+def test_model_params_unmatched_model_passes_through():
+    body = {
+        "model": "unknown-model",
+        "messages": [{"role": "user", "content": "hi"}],
+        "temperature": 1.0,
+        "top_p": 0.5,
+    }
+    s = Settings(model_params={"deepseek-chat": {"temperature": 0.7}})
+    out = transform_request_body(body, s)
+    assert out["temperature"] == 1.0
+    assert out["top_p"] == 0.5
+
+
+def test_model_params_no_model_field_passes_through():
+    body = {
+        "messages": [{"role": "user", "content": "hi"}],
+        "temperature": 1.0,
+    }
+    s = Settings(model_params={"deepseek-chat": {"temperature": 0.7}})
+    out = transform_request_body(body, s)
+    assert out["temperature"] == 1.0
+
+
+def test_model_params_empty_config_passes_through():
+    body = {
+        "model": "deepseek-chat",
+        "messages": [{"role": "user", "content": "hi"}],
+        "temperature": 1.0,
+    }
+    s = Settings()  # No model_params configured
+    out = transform_request_body(body, s)
+    assert out["temperature"] == 1.0
