@@ -41,7 +41,7 @@ def _summarize_messages(payload: bytes) -> str | None:
     content preview) even when the raw body would otherwise be truncated.
 
     Returns ``None`` if the payload isn't a JSON object with a ``messages``
-    list \u2014 in which case the caller should just rely on the raw dump.
+    list — in which case the caller should just rely on the raw dump.
     """
     try:
         data = json.loads(payload.decode("utf-8", errors="replace"))
@@ -53,9 +53,12 @@ def _summarize_messages(payload: bytes) -> str | None:
     if not isinstance(messages, list):
         return None
     lines: list[str] = []
-    for i, msg in enumerate(messages):
+    i = 0
+    while i < len(messages):
+        msg = messages[i]
         if not isinstance(msg, dict):
             lines.append(f"  [{i}] <non-dict>")
+            i += 1
             continue
         role = msg.get("role")
         content = msg.get("content")
@@ -66,6 +69,42 @@ def _summarize_messages(payload: bytes) -> str | None:
             if has_reasoning and isinstance(msg["reasoning_content"], str)
             else 0
         )
+        # Collapse consecutive assistant fragments (word-level splits from
+        # misbehaving clients like Android Studio) into a single summary line.
+        if (
+            role == "assistant"
+            and not has_tool_calls
+            and not has_reasoning
+            and isinstance(content, str)
+            and len(content) < 32
+        ):
+            # Peek ahead to find the contiguous block
+            j = i + 1
+            collapsed_parts = [content]
+            while j < len(messages):
+                nxt = messages[j]
+                if (
+                    isinstance(nxt, dict)
+                    and nxt.get("role") == "assistant"
+                    and not nxt.get("tool_calls")
+                    and "reasoning_content" not in nxt
+                    and isinstance(nxt.get("content"), str)
+                    and len(nxt["content"]) < 32
+                ):
+                    collapsed_parts.append(nxt["content"])
+                    j += 1
+                else:
+                    break
+            if len(collapsed_parts) > 2:
+                joined = " ".join(collapsed_parts)
+                preview = joined[:120].replace("\n", "\\n")
+                lines.append(
+                    f"  [{i}-{j - 1}] role=assistant tool_calls=False "
+                    f"reasoning_content=no content=str({len(joined)}): {preview!r}"
+                )
+                i = j
+                continue
+        # ── normal single-message summary ──────────────────────────
         if isinstance(content, str):
             preview = content[:120].replace("\n", "\\n")
             content_desc = f"str({len(content)}): {preview!r}"
@@ -78,6 +117,7 @@ def _summarize_messages(payload: bytes) -> str | None:
             f"reasoning_content={'yes(' + str(reasoning_len) + ')' if has_reasoning else 'no'} "
             f"content={content_desc}"
         )
+        i += 1
     return "\n".join(lines)
 
 
@@ -104,6 +144,7 @@ def _log_upstream_error(
         method,
         url,
         status,
+        # _redact_headers(request_headers),
         _redact_headers(request_headers),
         summary if summary is not None else "  <not a chat-completions JSON body>",
         _safe_decode(request_body),
@@ -164,12 +205,16 @@ def _build_upstream_request(
         rewritten = resolved.path if resolved.path.startswith("/") else f"/{resolved.path}"
         upstream_url = f"{base}{prefix}{rewritten}"
 
-        # Inject per-upstream API key when the client didn't provide auth
+        # Override per-upstream API key
         api_key = resolved.options.api_key
         if api_key:
             key_header = resolved.options.api_key_header.lower()
-            if key_header not in {k.lower() for k in headers}:
+            if key_header in {k.lower() for k in headers}:
                 value = f"Bearer {api_key}" if resolved.options.api_key_as_bearer else api_key
+                logger.info("Injecting header: %s (value redacted, length=%d) replacing original",
+                             key_header, len(api_key))
+                if key_header != resolved.options.api_key_header:
+                    del headers[key_header]
                 headers[resolved.options.api_key_header] = value
 
         return upstream_url, headers
